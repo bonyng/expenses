@@ -36,9 +36,38 @@ function text(st, s, size, color, bold) {
   return t;
 }
 
+// Ảnh nền riêng: chọn từ thư viện ảnh khi chạy script trong Scriptable, lưu trong máy.
+const FM = FileManager.local();
+const BG_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_bg.jpg");
+
+function applyBackground(w) {
+  w.backgroundColor = BG;
+  if (!FM.fileExists(BG_PATH)) return;
+  w.backgroundImage = FM.readImage(BG_PATH);
+  // Lớp tối mờ dần để chữ luôn đọc được trên mọi ảnh.
+  const g = new LinearGradient();
+  g.colors = [new Color("#000000", 0.55), new Color("#000000", 0.15), new Color("#000000", 0.55)];
+  g.locations = [0, 0.5, 1];
+  w.backgroundGradient = g;
+}
+
+async function menu() {
+  const a = new Alert();
+  a.title = "Expenses widget";
+  a.addAction("Choose photo");
+  if (FM.fileExists(BG_PATH)) a.addAction("Remove photo");
+  a.addCancelAction("Preview");
+  const i = await a.present();
+  if (i === 0) {
+    try { FM.writeImage(BG_PATH, await Photos.fromLibrary()); } catch (e) {}
+  } else if (i === 1) {
+    FM.remove(BG_PATH);
+  }
+}
+
 async function build() {
   const w = new ListWidget();
-  w.backgroundColor = BG;
+  applyBackground(w);
   w.url = APP;
   w.setPadding(14, 14, 14, 14);
   const key = await getKey();
@@ -52,7 +81,7 @@ async function build() {
     return w;
   }
   // Không hiện số dư (riêng tư) — chỉ số đã chi hôm nay.
-  text(w, "💰 Spent today", 12, MUTED);
+  text(w, "💰 Spent today", 12, Color.white());
   w.addSpacer(2);
   text(w, fmt(d.spentToday), 26, Color.white(), true);
   w.addSpacer();
@@ -68,6 +97,7 @@ async function build() {
   return w;
 }
 
+if (!config.runsInWidget && Keychain.contains(KC)) await menu();
 const widget = await build();
 if (config.runsInWidget) Script.setWidget(widget);
 else await widget.presentSmall();
