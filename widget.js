@@ -1,0 +1,75 @@
+// Expenses widget for Scriptable (iOS). Unit: thousand VND.
+// First run inside Scriptable asks for the access key and stores it in the Keychain.
+const API = "https://script.google.com/macros/s/AKfycbxfGJti6JuILSU_NeaFb5ATQPU5L00tY8uenZQFFT7xtukQqA0fZhBnu2mZI5crjE16/exec";
+const APP = "https://bonyng.github.io/expenses/";
+const KC = "expenses_key";
+
+async function getKey() {
+  if (Keychain.contains(KC)) return Keychain.get(KC);
+  if (config.runsInWidget) return null;
+  const a = new Alert();
+  a.title = "Access key";
+  a.addSecureTextField("Access key");
+  a.addAction("Save");
+  a.addCancelAction("Cancel");
+  if ((await a.present()) < 0) return null;
+  const k = a.textFieldValue(0).trim();
+  if (k) Keychain.set(KC, k);
+  return k || null;
+}
+
+async function call(fn, key) {
+  const q = encodeURIComponent(JSON.stringify({ fn, args: [], key }));
+  const r = new Request(API + "?q=" + q + "&_=" + Date.now());
+  return await r.loadJSON();
+}
+
+const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+const GREEN = new Color("#2DB84C"), BG = new Color("#0E0E0F"), MUTED = new Color("#8E8E93");
+
+function text(st, s, size, color, bold) {
+  const t = st.addText(s);
+  t.font = bold ? Font.boldSystemFont(size) : Font.systemFont(size);
+  t.textColor = color || Color.white();
+  t.lineLimit = 1;
+  t.minimumScaleFactor = 0.6;
+  return t;
+}
+
+async function build() {
+  const w = new ListWidget();
+  w.backgroundColor = BG;
+  w.url = APP;
+  w.setPadding(14, 14, 14, 14);
+  const key = await getKey();
+  let d = null;
+  try { if (key) d = await call("widgetSummary", key); } catch (e) {}
+  if (!d || !d.__ok) {
+    if (d && d.error === "Unauthorized" && Keychain.contains(KC)) Keychain.remove(KC);
+    text(w, "💰 Expenses", 13, GREEN, true);
+    w.addSpacer(6);
+    text(w, key ? "Can't load data" : "Run in Scriptable to set key", 12, MUTED);
+    return w;
+  }
+  text(w, "💰 Balance", 12, MUTED);
+  text(w, fmt(d.balance), 26, Color.white(), true);
+  w.addSpacer(8);
+  text(w, "Spent MTD", 11, MUTED);
+  text(w, fmt(d.spentMTD), 17, new Color("#FF6B6B"), true);
+  w.addSpacer();
+  const add = w.addStack();
+  add.url = APP + "?add=1";
+  add.backgroundColor = GREEN;
+  add.cornerRadius = 10;
+  add.setPadding(5, 0, 5, 0);
+  add.addSpacer();
+  text(add, "＋ Add", 13, Color.white(), true);
+  add.addSpacer();
+  w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
+  return w;
+}
+
+const widget = await build();
+if (config.runsInWidget) Script.setWidget(widget);
+else await widget.presentSmall();
+Script.complete();
