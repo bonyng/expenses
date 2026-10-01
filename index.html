@@ -1,0 +1,2931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Expenses</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" crossorigin="anonymous"></script>
+<script>
+  window.onerror = function(msg, src, line) {
+    var el = document.getElementById('boot-error');
+    if (el) {
+      el.style.display = 'block';
+      el.innerText = 'Load error: ' + msg + ' (' + (src || '') + ':' + line + ')';
+    }
+  };
+</script>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<link rel="icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="Expenses" />
+<meta name="theme-color" content="#0E0E0F" />
+<script>
+(function () {
+  var API = "https://script.google.com/macros/s/AKfycbxfGJti6JuILSU_NeaFb5ATQPU5L00tY8uenZQFFT7xtukQqA0fZhBnu2mZI5crjE16/exec", KEY = 'exp_key';
+  function getKey() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }
+  function askKey() {
+    var k = prompt('Enter your access key');
+    if (k && k.trim()) { try { localStorage.setItem(KEY, k.trim()); } catch (e) {} location.reload(); }
+  }
+  function call(fn, args) {
+    return fetch(API, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ fn: fn, args: args, key: getKey() }) }).then(function (r) { return r.json(); });
+  }
+  function runner(ok, fail) {
+    return new Proxy({}, { get: function (_, p) {
+      if (p === 'withSuccessHandler') return function (f) { return runner(f, fail); };
+      if (p === 'withFailureHandler') return function (f) { return runner(ok, f); };
+      return function () {
+        call(p, [].slice.call(arguments)).then(function (res) {
+          if (res && res.error === 'Unauthorized') { askKey(); if (fail) fail('Access key required'); return; }
+          if (ok) ok(res);
+        }).catch(function (e) { if (fail) fail('Network error: ' + (e && e.message || e)); });
+      };
+    } });
+  }
+  window.google = { script: { run: runner(), url: { getLocation: function (cb) {
+    var q = {}; new URLSearchParams(location.search).forEach(function (v, k) { q[k] = v; }); cb({ parameter: q, hash: location.hash });
+  } } } };
+  if ('serviceWorker' in navigator) window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js'); });
+})();
+</script>
+
+<style>
+
+:root {
+  --bg: #0E0E0F;
+  --card: #1C1C1E;
+  --card2: #2A2A2D;
+  --line: #2E2E31;
+  --text: #F2F2F2;
+  --muted: #8E8E93;
+  --green: #2DB84C;
+  --green-bg: rgba(45, 184, 76, .14);
+  --red: #FF5A52;
+  --red-bg: rgba(255, 90, 82, .16);
+  --amber: #F5B83D;
+  --amber-bg: rgba(245, 184, 61, .15);
+  --blue: #3B8BFF;
+  --radius: 18px;
+  --nav-h: 64px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font-family: 'Be Vietnam Pro', -apple-system, system-ui, sans-serif; font-size: 15px; line-height: 1.35; overscroll-behavior-y: none; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+input, select, textarea { font: inherit; color: var(--text); }
+.app { max-width: 520px; margin: 0 auto; min-height: 100vh; padding: 0 16px calc(var(--nav-h) + var(--safe-b) + 28px); }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.green { color: var(--green); } .red { color: var(--red); } .blue { color: var(--blue); } .amber { color: var(--amber); }
+.small { font-size: 12.5px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.grow { flex: 1; min-width: 0; }
+.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* header */
+.hdr { padding: 18px 0 10px; }
+.hdr h1 { font-size: 30px; font-weight: 700; margin: 0; letter-spacing: -.5px; }
+.hdr .sub { display: flex; justify-content: space-between; margin-top: 4px; font-size: 13px; color: var(--muted); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 6px; vertical-align: middle; }
+.icon-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--card); display: inline-flex; align-items: center; justify-content: center; font-size: 17px; }
+.unit { font-size: 12px; color: var(--muted); font-style: italic; }
+
+/* month switcher */
+.seg { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px; margin: 10px 0 14px; }
+.seg button { flex: 1; padding: 9px 4px; border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+.seg button.on { background: var(--card2); color: var(--green); }
+.mswitch { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 14px; }
+.mswitch .lbl { font-weight: 600; font-size: 16px; }
+.mswitch button { width: 40px; height: 36px; border-radius: 10px; background: var(--card); font-size: 18px; }
+
+/* cards */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+.card.tight { padding: 0; overflow: hidden; }
+.sec-title { font-size: 13px; font-weight: 700; letter-spacing: .8px; color: var(--muted); text-transform: uppercase; margin: 18px 2px 10px; display: flex; justify-content: space-between; align-items: center; }
+.sec-title .link { text-transform: none; letter-spacing: 0; color: var(--green); font-weight: 600; font-size: 14px; }
+.big { font-size: 34px; font-weight: 700; letter-spacing: -.5px; }
+.mid { font-size: 20px; font-weight: 600; }
+.kgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.kbox { background: var(--card2); border-radius: 12px; padding: 11px 12px; }
+.kbox .k { font-size: 12.5px; color: var(--muted); display: flex; justify-content: space-between; }
+.kbox .v { font-size: 19px; font-weight: 600; margin-top: 3px; }
+.foot-note { font-size: 11.5px; color: var(--muted); margin-top: 12px; text-align: center; }
+.divider { height: 1px; background: var(--line); margin: 12px 0; }
+
+/* pills */
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.g { background: var(--green-bg); color: var(--green); }
+.pill.r { background: var(--red-bg); color: var(--red); }
+.pill.a { background: var(--amber-bg); color: var(--amber); }
+.pill.n { background: var(--card2); color: var(--muted); }
+
+/* progress */
+.bar { position: relative; height: 8px; border-radius: 6px; background: var(--card2); margin: 12px 0 8px; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; }
+.bar .fc { position: absolute; top: 0; bottom: 0; border-radius: 6px; opacity: .18; }
+.bar .tick { position: absolute; top: -4px; width: 2px; height: 16px; background: #fff; border-radius: 1px; }
+.bar-legend { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+.bar-legend b { color: var(--text); font-weight: 600; }
+
+/* lists */
+.item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.item:first-child { border-top: 0; }
+.item.tap:active { background: var(--card2); }
+.ic { width: 40px; height: 40px; border-radius: 50%; background: var(--card2); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: none; }
+.ic.sm { width: 32px; height: 32px; font-size: 16px; }
+.t1 { font-weight: 600; }
+.t2 { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.amt { font-weight: 600; white-space: nowrap; }
+.dayhead { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.dayhead .dd { font-size: 30px; font-weight: 700; width: 42px; }
+.bud { padding: 14px 16px; border-top: 1px solid var(--line); }
+.bud:first-child { border-top: 0; }
+.bud:active { background: var(--card2); }
+.chev { color: var(--muted); font-size: 20px; margin-left: 2px; }
+
+/* bottom nav */
+.nav { position: fixed; left: 0; right: 0; bottom: 0; background: #151517; border-top: 1px solid var(--line); padding-bottom: var(--safe-b); z-index: 20; }
+.nav-in { max-width: 520px; margin: 0 auto; display: flex; height: var(--nav-h); align-items: center; }
+.nav-in button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+.nav-in button .i { font-size: 20px; line-height: 1; filter: grayscale(1); opacity: .75; }
+.nav-in button.on { color: var(--green); }
+.nav-in button.on .i { filter: none; opacity: 1; }
+.fab { width: 58px !important; height: 58px; flex: none !important; border-radius: 50%; background: var(--green) !important; color: #fff !important; font-size: 32px !important; margin-top: -26px; box-shadow: 0 6px 20px rgba(45, 184, 76, .4); justify-content: center; }
+
+/* sheet (modal) */
+.sheet-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
+.sheet { width: 100%; max-width: 520px; max-height: 94vh; overflow-y: auto; background: var(--bg); border-radius: 22px 22px 0 0; padding: 14px 16px calc(18px + var(--safe-b)); animation: up .18s ease-out; }
+@keyframes up { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
+.sheet-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.sheet-top .ttl { font-weight: 700; font-size: 17px; }
+.txt-btn { color: var(--green); font-weight: 600; padding: 6px 4px; }
+.txt-btn.red { color: var(--red); }
+.page-full { position: fixed; inset: 0; background: var(--bg); z-index: 30; overflow-y: auto; }
+.page-full .app { padding-bottom: 40px; }
+
+/* add form */
+.typeseg { display: flex; background: var(--card); border-radius: 12px; padding: 3px; margin-bottom: 12px; }
+.typeseg button { flex: 1; padding: 8px; border-radius: 9px; font-weight: 600; color: var(--muted); }
+.typeseg button.on.e { background: var(--red-bg); color: var(--red); }
+.typeseg button.on.i { background: rgba(59, 139, 255, .16); color: var(--blue); }
+.quick { display: flex; gap: 8px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; margin-bottom: 10px; }
+.quick input { flex: 1; background: none; border: 0; outline: none; font-size: 16px; }
+.amount-disp { text-align: right; font-size: 40px; font-weight: 700; padding: 6px 4px 2px; letter-spacing: -.5px; }
+.amount-disp .u { font-size: 12px; color: var(--muted); font-weight: 400; display: block; letter-spacing: 0; }
+.field { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bottom: 8px; }
+.field input, .field select { flex: 1; background: none; border: 0; outline: none; font-size: 15px; min-width: 0; }
+.field select option { background: var(--card); }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-size: 13.5px; white-space: nowrap; }
+.chip.on { border-color: var(--green); background: var(--green-bg); color: var(--green); }
+.keypad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+.keypad button { height: 50px; border-radius: 12px; background: var(--card); font-size: 20px; font-weight: 500; }
+.keypad button.op { background: var(--card2); font-size: 16px; }
+.keypad button.ok { background: var(--green); color: #fff; font-weight: 700; font-size: 16px; grid-row: span 2; height: auto; }
+.catgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.catgrid button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px; border-radius: 12px; font-size: 11.5px; text-align: center; }
+.catgrid button.on { background: var(--green-bg); color: var(--green); }
+.catgrid .ic { width: 42px; height: 42px; }
+.parent-lbl { font-size: 12px; color: var(--muted); font-weight: 600; margin: 12px 4px 4px; text-transform: uppercase; letter-spacing: .6px; }
+.btn { display: block; width: 100%; padding: 14px; border-radius: 14px; background: var(--green); color: #fff; font-weight: 700; font-size: 16px; text-align: center; }
+.btn.ghost { background: var(--card); color: var(--text); }
+.btn.danger { background: var(--red-bg); color: var(--red); }
+.btn:disabled { opacity: .5; }
+.btns { display: flex; gap: 8px; margin-top: 12px; }
+
+/* misc */
+.search { display: flex; align-items: center; gap: 8px; background: var(--card); border-radius: 12px; padding: 9px 12px; margin-bottom: 12px; }
+.search input { flex: 1; background: none; border: 0; outline: none; }
+.err { background: var(--red-bg); color: #FFB4AE; border-radius: 12px; padding: 12px 14px; margin: 12px 0; font-size: 13.5px; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 18px); background: #2C2C2E; color: var(--text); padding: 10px 16px; border-radius: 12px; z-index: 60; font-size: 14px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); max-width: 90vw; }
+.empty { text-align: center; color: var(--muted); padding: 30px 10px; font-size: 14px; }
+.hbar { height: 6px; border-radius: 4px; background: var(--card2); margin-top: 6px; overflow: hidden; }
+.hbar > div { height: 100%; border-radius: 4px; background: var(--green); }
+.chart-box { position: relative; height: 210px; }
+.ring { width: 72px; height: 72px; flex: none; }
+.pending { border: 1px dashed #4A4A4E; }
+.inp { width: 92px; text-align: right; background: var(--card2); border: 0; border-radius: 9px; padding: 7px 9px; outline: none; }
+.inp.wide { width: 100%; text-align: left; }
+.spinner { width: 16px; height: 16px; border: 2px solid var(--card2); border-top-color: var(--green); border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Add transaction — kiểu Money Lover */
+.mlform { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 14px; margin-bottom: 12px; }
+.mlrow { display: flex; align-items: center; gap: 14px; min-height: 58px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.mlrow:last-child { border-bottom: 0; }
+.mlrow input { background: none; border: 0; outline: none; font-size: 16px; min-width: 0; color: var(--text); }
+.mlrow.amt { min-height: 74px; }
+.mlrow.amt.focus .mlamt { border-bottom-color: var(--green); }
+.curbox { flex: none; width: 40px; height: 28px; border: 1px solid var(--line); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--muted); }
+.mlamt { flex: 1; font-size: 32px; font-weight: 700; border-bottom: 2px solid var(--line); padding: 4px 0; letter-spacing: -.5px; }
+.ml-big { font-size: 18px; font-weight: 600; }
+.ml-ic { width: 40px; text-align: center; font-size: 18px; color: var(--muted); flex: none; }
+.ml-date { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.kpwrap { position: sticky; bottom: calc(-18px - var(--safe-b)); background: var(--bg); padding: 8px 0 4px; margin-top: 8px; }
+.btn.danger { background: var(--red-bg); color: var(--red); }
+.cs-full { position: fixed; inset: 0; z-index: 60; background: var(--bg); overflow-y: auto; padding: 14px 16px calc(24px + var(--safe-b)); max-width: 520px; margin: 0 auto; }
+.cs-group { border-bottom: 1px solid var(--line); }
+.cs-group:last-child { border-bottom: 0; }
+.cs-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer; font-size: 15.5px; position: relative; }
+.cs-row.on { color: var(--green); }
+.cs-row.child { padding-left: 40px; }
+.cs-row.child .ic { width: 34px; height: 34px; font-size: 16px; }
+.cs-tree { position: absolute; left: 33px; top: 0; bottom: 0; width: 12px; border-left: 1.5px solid var(--card2); }
+.cs-tree::after { content: ''; position: absolute; left: 0; top: 50%; width: 10px; border-top: 1.5px solid var(--card2); }
+.cs-row.child.last .cs-tree { bottom: 50%; }
+
+</style>
+</head>
+<body>
+<div id="boot-error" style="display:none;font-family:Arial;padding:16px;color:#FCA5A5;background:#3B1111;border:1px solid #7F1D1D;margin:16px;border-radius:12px;"></div>
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8E8E93;font-family:sans-serif;font-size:14px;gap:10px;background:#0E0E0F;">
+    <div style="width:18px;height:18px;border:3px solid #2A2A2D;border-top-color:#2DB84C;border-radius:50%;animation:spin 1s linear infinite;"></div>
+    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    Loading…
+  </div>
+</div>
+<script>
+// ===================================================================
+// CORE — format, RPC, model (mọi phép tính nằm ở đây; page chỉ hiển thị)
+// Đơn vị: NGHÌN ĐỒNG. Không nhân 1.000, không gắn ₫.
+// ===================================================================
+const {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback
+} = React;
+const UNIT_LABEL = 'Unit: thousand VND';
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MON3 = MONTHS.map(m => m.slice(0, 3));
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// ---- format ----
+const NF = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 0
+});
+const fmt = v => v == null || isNaN(v) ? '—' : NF.format(Math.round(v * 100) / 100);
+const fmtS = v => v == null || isNaN(v) ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + NF.format(Math.abs(Math.round(v * 100) / 100));
+const fmtPct = v => v == null || !isFinite(v) ? '—' : Math.round(v * 100) + '%';
+const pad2 = n => ('0' + n).slice(-2);
+const ymOf = d => d.slice(0, 7); // 'yyyy-MM'
+const ymLabel = ym => MONTHS[+ym.slice(5, 7) - 1] + ' ' + ym.slice(0, 4);
+const ymShort = ym => MON3[+ym.slice(5, 7) - 1] + ' ' + ym.slice(2, 4);
+const ymAdd = (ym, k) => {
+  const y = +ym.slice(0, 4),
+    m = +ym.slice(5, 7) - 1 + k;
+  const d = new Date(y, m, 1);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+};
+const daysIn = ym => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
+const budgetMonthKey = ym => ym.slice(5, 7) + '/' + ym.slice(0, 4); // sheet Budgets dùng MM/YYYY
+const dowOf = d => new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)).getDay();
+const fold = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase().trim();
+const parseNum = s => {
+  const t = String(s || '').trim().replace(/,/g, '');
+  if (!t) return null;
+  const n = Number(t);
+  return isNaN(n) ? null : n;
+};
+
+// ---- RPC ----
+const IS_SNAPSHOT = !!window.__SNAPSHOT__;
+function rpc(fn, payload) {
+  return new Promise((resolve, reject) => {
+    if (IS_SNAPSHOT) {
+      resolve(fn === 'getBootstrap' ? window.__SNAPSHOT__ : {
+        __ok: true
+      });
+      return;
+    }
+    if (!window.google || !google.script || !google.script.run) {
+      reject('Open this page from the deployed web app link.');
+      return;
+    }
+    google.script.run.withSuccessHandler(res => res && res.__ok ? resolve(res) : reject(res && res.error || 'Unknown error')).withFailureHandler(err => reject(String(err && err.message || err)))[fn](payload);
+  });
+}
+function readUrlParams() {
+  return new Promise(resolve => {
+    try {
+      google.script.url.getLocation(loc => resolve(loc.parameter || {}));
+    } catch (e) {
+      resolve({});
+    }
+  });
+}
+
+// ---- model ----
+function buildModel(boot) {
+  const cols = boot.tx.cols;
+  const tx = boot.tx.rows.map(r => {
+    const o = {};
+    cols.forEach((c, i) => {
+      o[c] = r[i];
+    });
+    o.amount = Number(o.amount) || 0;
+    return o;
+  });
+  const cats = boot.categories.filter(c => c.name);
+  const catBy = {};
+  cats.forEach(c => {
+    catBy[c.name] = c;
+  });
+  const parentOf = name => {
+    const c = catBy[name];
+    return c && c.parent && catBy[c.parent] ? c.parent : name;
+  };
+  const childrenOf = {};
+  cats.forEach(c => {
+    const p = parentOf(c.name);
+    (childrenOf[p] = childrenOf[p] || []).push(c.name);
+  });
+  const excluded = name => !!(catBy[name] && catBy[name].exclude);
+  const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
+  const disp = name => catBy[name] && catBy[name].display || name;
+  const icon = name => catBy[name] && catBy[name].icon || '•';
+  const posted = tx.filter(t => t.status !== 'pending');
+  const pending = tx.filter(t => t.status === 'pending');
+  const opening = (boot.wallets || []).reduce((s, w) => s + (Number(w.opening_balance) || 0), 0);
+  return {
+    boot,
+    tx,
+    posted,
+    pending,
+    cats,
+    catBy,
+    parentOf,
+    childrenOf,
+    excluded,
+    isFixed,
+    disp,
+    icon,
+    opening,
+    today: boot.today,
+    settings: boot.settings || {}
+  };
+}
+const signed = t => t.type === 'income' ? t.amount : -t.amount;
+const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+function balanceAt(M, dateExclusive) {
+  // số dư trước ngày (không gồm ngày đó)
+  return M.opening + sumBy(M.posted.filter(t => !dateExclusive || t.date < dateExclusive), signed);
+}
+function monthTx(M, ym) {
+  return M.posted.filter(t => t.date.startsWith(ym));
+}
+function reportable(M, list) {
+  return list.filter(t => !M.excluded(t.category));
+}
+
+/** Budget của 1 nhóm lá cho tháng ym: dòng MM/YYYY thắng dòng default. */
+function leafBudget(M, ym) {
+  const key = budgetMonthKey(ym),
+    out = {};
+  M.boot.budgets.forEach(b => {
+    if (b.month === 'default') out[b.category] = b.amount;
+  });
+  M.boot.budgets.forEach(b => {
+    if (b.month === key) out[b.category] = b.amount;
+  });
+  return out;
+}
+
+/** Tiến độ tháng: số ngày đã qua d / tổng D. Tháng quá khứ d=D, tương lai d=0. */
+function monthProgress(M, ym) {
+  const D = daysIn(ym),
+    tym = ymOf(M.today);
+  const d = ym < tym ? D : ym > tym ? 0 : +M.today.slice(8, 10);
+  return {
+    d,
+    D,
+    left: D - d,
+    isCurrent: ym === tym
+  };
+}
+
+/**
+ * Dự báo chi cuối tháng cho 1 khoản.
+ * Đầu tháng ít dữ liệu nên trộn nhịp thực tế với nhịp ngân sách: w = min(1, d/10).
+ * Nhóm hoá đơn cố định: max(đã chi + nháp định kỳ còn chờ, target).
+ */
+function forecastOf(spent, target, prog, fixed, pendingAmt) {
+  const {
+    d,
+    D
+  } = prog;
+  if (d >= D) return spent;
+  if (fixed) return Math.max(spent + (pendingAmt || 0), target || 0);
+  if (d === 0) return Math.max(spent, target || 0);
+  const w = Math.min(1, d / 10);
+  const pace = w * (spent / d) + (1 - w) * ((target || 0) / D);
+  return spent + pace * (D - d);
+}
+
+/** Bảng ngân sách theo nhóm cha cho tháng ym. */
+function budgetTable(M, ym) {
+  const prog = monthProgress(M, ym);
+  const lb = leafBudget(M, ym);
+  const exp = reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense');
+  const pend = M.pending.filter(t => t.date.startsWith(ym));
+  const leafSpent = {};
+  exp.forEach(t => {
+    leafSpent[t.category] = (leafSpent[t.category] || 0) + t.amount;
+  });
+  const parents = {};
+  const touch = p => parents[p] = parents[p] || {
+    name: p,
+    target: 0,
+    spent: 0,
+    children: {},
+    pendingAmt: 0
+  };
+  Object.keys(lb).forEach(c => {
+    if (M.excluded(c)) return;
+    const p = touch(M.parentOf(c));
+    p.target += lb[c];
+    p.children[c] = p.children[c] || {
+      name: c,
+      target: 0,
+      spent: 0
+    };
+    p.children[c].target += lb[c];
+  });
+  Object.keys(leafSpent).forEach(c => {
+    const p = touch(M.parentOf(c));
+    p.spent += leafSpent[c];
+    p.children[c] = p.children[c] || {
+      name: c,
+      target: 0,
+      spent: 0
+    };
+    p.children[c].spent += leafSpent[c];
+  });
+  pend.forEach(t => {
+    const p = touch(M.parentOf(t.category));
+    p.pendingAmt += t.amount;
+  });
+  const enrich = (o, fixed, pendingAmt) => {
+    const toDate = fixed ? o.target : o.target * prog.d / prog.D;
+    const fc = forecastOf(o.spent, o.target, prog, fixed, pendingAmt);
+    return Object.assign(o, {
+      fixed,
+      toDate,
+      forecast: fc,
+      diffToDate: o.spent - toDate,
+      remaining: o.target - o.spent
+    });
+  };
+  const rows = Object.values(parents).map(p => {
+    const fixed = M.isFixed(p.name);
+    p.children = Object.values(p.children).map(c => enrich(c, fixed, 0)).sort((a, b) => b.target - a.target || b.spent - a.spent);
+    return enrich(p, fixed, p.pendingAmt);
+  }).sort((a, b) => (b.target > 0) - (a.target > 0) || b.target - a.target || b.spent - a.spent);
+  const T = rows.reduce((s, r) => ({
+    target: s.target + r.target,
+    spent: s.spent + r.spent,
+    toDate: s.toDate + r.toDate,
+    forecast: s.forecast + r.forecast
+  }), {
+    target: 0,
+    spent: 0,
+    toDate: 0,
+    forecast: 0
+  });
+  T.remaining = T.target - T.spent;
+  T.safePerDay = prog.left > 0 ? Math.max(0, T.remaining - sumBy(rows.filter(r => r.fixed), r => Math.max(0, r.target - r.spent))) / prog.left : null;
+  return {
+    prog,
+    rows,
+    total: T
+  };
+}
+
+/** Status 1 dòng budget → {cls, text}. */
+function paceStatus(r, prog) {
+  if (!r.target) return r.spent ? {
+    cls: 'n',
+    text: 'No budget'
+  } : {
+    cls: 'n',
+    text: '—'
+  };
+  if (r.spent > r.target) return {
+    cls: 'r',
+    text: 'Over month +' + fmt(r.spent - r.target)
+  };
+  if (r.fixed) return {
+    cls: 'n',
+    text: 'Fixed bill · ' + fmtPct(r.spent / r.target)
+  };
+  if (!prog.isCurrent) return {
+    cls: 'g',
+    text: 'Under ' + fmt(r.target - r.spent)
+  };
+  if (r.diffToDate > 0) return {
+    cls: 'r',
+    text: 'Over to date +' + fmt(r.diffToDate)
+  };
+  if (r.forecast > r.target) return {
+    cls: 'a',
+    text: 'Forecast over +' + fmt(r.forecast - r.target)
+  };
+  return {
+    cls: 'g',
+    text: 'Under −' + fmt(-r.diffToDate)
+  };
+}
+
+/** Thu/chi/tiết kiệm của tháng + dự báo. */
+function monthSummary(M, ym) {
+  const list = reportable(M, monthTx(M, ym));
+  const income = sumBy(list.filter(t => t.type === 'income'), t => t.amount);
+  const expense = sumBy(list.filter(t => t.type === 'expense'), t => t.amount);
+  return {
+    income,
+    expense,
+    net: income - expense
+  };
+}
+function savingsView(M, ym) {
+  const s = monthSummary(M, ym);
+  const bt = budgetTable(M, ym);
+  const prev = [1, 2, 3].map(k => monthSummary(M, ymAdd(ym, -k)).income).filter(v => v > 0);
+  const avgInc = prev.length ? sumBy(prev, v => v) / prev.length : 0;
+  const expIncome = bt.prog.d >= bt.prog.D ? s.income : Math.max(s.income, avgInc);
+  const target = Number(M.settings.savings_target) || 0.45;
+  const fcSpend = Math.max(s.expense, bt.total.forecast);
+  const fcSaved = expIncome - fcSpend;
+  return {
+    ...s,
+    target,
+    expIncome,
+    avgInc,
+    incomeIsEstimate: expIncome > s.income,
+    savedPct: s.income > 0 ? s.net / s.income : null,
+    fcSpend,
+    fcSaved,
+    fcPct: expIncome > 0 ? fcSaved / expIncome : null,
+    spendLimit: expIncome * (1 - target),
+    prog: bt.prog
+  };
+}
+
+// ---- Gợi ý nhóm & nhập nhanh ----
+/** Xếp hạng nhóm theo tần suất 90 ngày (có trọng số gần đây) + cùng khung giờ (±2h) + cùng thứ. */
+/**
+ * Đoán nhóm theo số tiền: 200 → Bửu, 60 → Xăng dầu... dựa trên giao dịch cùng số tiền trong 180 ngày (giảm dần theo thời gian).
+ * Chỉ trả khi có ≥2 lần và nhóm đó chiếm ≥50% số lần dùng số tiền này.
+ */
+function predictByAmount(M, type, amount, now = new Date()) {
+  if (!(amount > 0)) return null;
+  const cutoff = new Date(now.getTime() - 180 * 864e5).toISOString().slice(0, 10);
+  const score = {},
+    count = {};
+  let total = 0;
+  M.posted.forEach(t => {
+    if (t.type !== type || t.amount !== amount || t.date < cutoff || t.source === 'ml_report' || M.excluded(t.category)) return;
+    const w = Math.exp(-((now - new Date(t.date)) / 864e5) / 60);
+    score[t.category] = (score[t.category] || 0) + w;
+    count[t.category] = (count[t.category] || 0) + 1;
+    total += w;
+  });
+  const best = Object.keys(score).filter(c => M.catBy[c] && M.catBy[c].active !== false).sort((a, b) => score[b] - score[a])[0];
+  return best && count[best] >= 2 && score[best] / total >= .5 ? best : null;
+}
+function suggestCategories(M, type, now = new Date()) {
+  const cutoff = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
+  const hour = now.getHours(),
+    dow = now.getDay();
+  const score = {};
+  M.posted.forEach(t => {
+    if (t.type !== type || t.date < cutoff || M.excluded(t.category) || t.source === 'ml_report') return;
+    const age = (now - new Date(t.date)) / 864e5;
+    let s = Math.exp(-age / 45);
+    if (t.created_at && t.source === 'manual') {
+      const h = new Date(t.created_at).getHours();
+      if (Math.abs(h - hour) <= 2) s *= 2.5;
+    }
+    if (dowOf(t.date) === dow) s *= 1.3;
+    score[t.category] = (score[t.category] || 0) + s;
+  });
+  return Object.keys(score).filter(c => M.catBy[c] && M.catBy[c].active !== false).sort((a, b) => score[b] - score[a]);
+}
+
+/**
+ * "cf 35", "35 cf sữa", "an trua 45", "luong 18611".
+ * Số đầu tiên = số tiền (nghìn đồng). Từ khớp alias / tên nhóm (bỏ dấu) = nhóm. Phần còn lại = ghi chú.
+ * Không khớp nhóm → tra ghi chú cũ giống nhất.
+ */
+function parseQuick(M, text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+  let amount = null,
+    category = null;
+  const rest = [];
+  const aliasMap = {};
+  M.cats.forEach(c => {
+    if (c.active === false) return;
+    String(c.alias || '').split(/[\s,]+/).filter(Boolean).forEach(a => {
+      aliasMap[fold(a)] = c.name;
+    });
+  });
+  words.forEach(w => {
+    const n = /^[\d.,]+k?$/i.test(w) ? parseNum(w.replace(/k$/i, '')) : null;
+    if (amount == null && n != null && n > 0) {
+      amount = n;
+      return;
+    }
+    if (!category && aliasMap[fold(w)]) {
+      category = aliasMap[fold(w)];
+      return;
+    }
+    rest.push(w);
+  });
+  if (!category && rest.length) {
+    const phrase = fold(rest.join(' '));
+    const hit = M.cats.find(c => c.active !== false && (fold(c.name) === phrase || fold(c.display) === phrase)) || M.cats.find(c => c.active !== false && phrase.length >= 3 && (fold(c.name).startsWith(phrase) || fold(c.display).startsWith(phrase)));
+    if (hit) {
+      category = hit.name;
+      rest.length = 0;
+    }
+  }
+  const note = rest.join(' ');
+  if (!category && note) {
+    const f = fold(note);
+    for (let i = M.posted.length - 1; i >= 0; i--) {
+      const t = M.posted[i];
+      if (t.note && fold(t.note).includes(f) && !M.excluded(t.category)) {
+        category = t.category;
+        break;
+      }
+    }
+  }
+  const type = category && M.catBy[category] ? M.catBy[category].type : null;
+  return {
+    amount,
+    category,
+    note,
+    type
+  };
+}
+function toCsv(M) {
+  const head = ['date', 'type', 'category', 'parent', 'amount_thousand_vnd', 'note', 'wallet', 'source'];
+  const esc = v => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [head.join(',')].concat(M.posted.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(t => [t.date, t.type, t.category, M.parentOf(t.category), t.amount, t.note, t.wallet, t.source].map(esc).join(',')));
+  return '﻿' + lines.join('\n');
+}
+
+// ===================================================================
+// UI dùng chung
+// ===================================================================
+function ErrBox({
+  msg
+}) {
+  return msg ? /*#__PURE__*/React.createElement("div", {
+    className: "err"
+  }, "⚠️ ", String(msg)) : null;
+}
+function Toast({
+  toast
+}) {
+  return toast ? /*#__PURE__*/React.createElement("div", {
+    className: "toast"
+  }, toast) : null;
+}
+function Sheet({
+  title,
+  onClose,
+  right,
+  children
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "sheet-bg",
+    onClick: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sheet",
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sheet-top"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "txt-btn",
+    onClick: onClose
+  }, "Cancel"), /*#__PURE__*/React.createElement("div", {
+    className: "ttl"
+  }, title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 52,
+      textAlign: 'right'
+    }
+  }, right)), children));
+}
+function FullPage({
+  title,
+  onBack,
+  right,
+  children
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-full"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "app"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      padding: '14px 0 6px'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: onBack
+  }, "‹"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      fontSize: 17
+    }
+  }, title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 38,
+      textAlign: 'right'
+    }
+  }, right)), children));
+}
+function MonthSwitch({
+  ym,
+  setYm,
+  today
+}) {
+  const t = ymOf(today);
+  const rel = ym === t ? 'THIS MONTH' : ym === ymAdd(t, -1) ? 'LAST MONTH' : ym === ymAdd(t, 1) ? 'NEXT MONTH' : '';
+  return /*#__PURE__*/React.createElement("div", {
+    className: "mswitch"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setYm(ymAdd(ym, -1))
+  }, "‹"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'center'
+    },
+    onClick: () => setYm(t)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "lbl"
+  }, ymLabel(ym)), /*#__PURE__*/React.createElement("div", {
+    className: "small",
+    style: {
+      color: rel === 'THIS MONTH' ? 'var(--green)' : 'var(--muted)',
+      fontWeight: 600,
+      letterSpacing: .5
+    }
+  }, rel || 'TAP FOR THIS MONTH')), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setYm(ymAdd(ym, 1))
+  }, "›"));
+}
+
+/** Thanh tiến độ: fill = đã chi/target cả tháng; vạch trắng = target to date; vệt mờ = dự báo. */
+function BudgetBar({
+  r,
+  prog
+}) {
+  const max = Math.max(r.target, r.spent, r.forecast || 0) || 1;
+  const pct = v => Math.min(100, v / max * 100) + '%';
+  const color = !r.target ? 'var(--muted)' : r.spent > r.target ? 'var(--red)' : !r.fixed && prog.isCurrent && r.diffToDate > 0 ? 'var(--red)' : prog.isCurrent && r.forecast > r.target ? 'var(--amber)' : 'var(--green)';
+  return /*#__PURE__*/React.createElement("div", {
+    className: "bar"
+  }, prog.isCurrent && r.forecast > r.spent && /*#__PURE__*/React.createElement("div", {
+    className: "fc",
+    style: {
+      left: 0,
+      width: pct(r.forecast),
+      background: color
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "fill",
+    style: {
+      width: pct(r.spent),
+      background: color
+    }
+  }), r.target > 0 && !r.fixed && prog.isCurrent && /*#__PURE__*/React.createElement("div", {
+    className: "tick",
+    style: {
+      left: pct(r.toDate)
+    }
+  }), r.target > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "tick",
+    style: {
+      left: `calc(${pct(r.target)} - 2px)`,
+      background: '#666'
+    }
+  }));
+}
+function BudgetLegend({
+  r,
+  prog,
+  full
+}) {
+  if (!full) return /*#__PURE__*/React.createElement("div", {
+    className: "bar-legend num"
+  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
+    className: r.target && r.spent > (r.fixed || !prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
+  }, fmt(r.spent))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "bar-legend num"
+  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
+    className: r.target && r.spent > (r.fixed || !prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
+  }, fmt(r.spent))), prog.isCurrent && !r.fixed && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+}
+function TxItem({
+  M,
+  t,
+  onClick
+}) {
+  const isP = t.status === 'pending';
+  const parent = M.parentOf(t.category);
+  return /*#__PURE__*/React.createElement("div", {
+    className: 'item tap' + (isP ? ' pending' : ''),
+    onClick: onClick
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(t.category)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, M.disp(t.category)), /*#__PURE__*/React.createElement("div", {
+    className: "t2 ellipsis"
+  }, t.note || (parent !== t.category ? M.disp(parent) : ''), isP ? ' · pending' : '')), /*#__PURE__*/React.createElement("div", {
+    className: 'amt num ' + (t.type === 'income' ? 'blue' : 'red')
+  }, t.type === 'income' ? '+' : '−', fmt(t.amount)));
+}
+function DayGroups({
+  M,
+  list,
+  onEdit
+}) {
+  const byDay = {};
+  list.forEach(t => {
+    (byDay[t.date] = byDay[t.date] || []).push(t);
+  });
+  const days = Object.keys(byDay).sort().reverse();
+  if (!days.length) return /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No transactions");
+  return days.map(d => {
+    const items = byDay[d];
+    const net = sumBy(items, signed);
+    const isToday = d === M.today;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "card tight",
+      key: d
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "dayhead"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "dd num"
+    }, d.slice(8, 10)), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "t1"
+    }, isToday ? 'Today' : WEEKDAYS[dowOf(d)]), /*#__PURE__*/React.createElement("div", {
+      className: "t2"
+    }, ymLabel(d))), /*#__PURE__*/React.createElement("div", {
+      className: "amt num"
+    }, fmtS(net))), items.map(t => /*#__PURE__*/React.createElement(TxItem, {
+      key: t.id,
+      M: M,
+      t: t,
+      onClick: () => onEdit(t)
+    })));
+  });
+}
+function Ring({
+  value,
+  color
+}) {
+  const r = 30,
+    c = 2 * Math.PI * r,
+    v = Math.max(0, Math.min(1, value || 0));
+  return /*#__PURE__*/React.createElement("svg", {
+    className: "ring",
+    viewBox: "0 0 72 72"
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: r,
+    fill: "none",
+    stroke: "#2A2A2D",
+    strokeWidth: "7"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: r,
+    fill: "none",
+    stroke: color,
+    strokeWidth: "7",
+    strokeLinecap: "round",
+    strokeDasharray: c,
+    strokeDashoffset: c * (1 - v),
+    transform: "rotate(-90 36 36)"
+  }));
+}
+function useChart(ref, config, key) {
+  useEffect(() => {
+    if (!ref.current || !window.Chart) return;
+    const ch = new Chart(ref.current, config);
+    return () => ch.destroy();
+  }, [key]);
+}
+
+// ===================================================================
+// PAGES — Overview · Transactions · Budgets (+ drill-down) · Report
+// ===================================================================
+
+// ---------- Overview ----------
+function OverviewPage({
+  M,
+  ctx
+}) {
+  const ym = ymOf(M.today);
+  const sv = useMemo(() => savingsView(M, ym), [M]);
+  const bt = useMemo(() => budgetTable(M, ym), [M]);
+  const balance = balanceAt(M);
+  const pend = M.pending.filter(t => t.date.startsWith(ym));
+  const fcOk = sv.fcPct != null && sv.fcPct >= sv.target;
+  const risky = bt.rows.filter(r => r.target > 0 && (r.spent > r.target || !r.fixed && r.diffToDate > 0)).sort((a, b) => b.spent - (b.fixed ? b.target : b.toDate) - (a.spent - (a.fixed ? a.target : a.toDate))).slice(0, 4);
+  const recent = M.posted.slice().sort((a, b) => b.date < a.date ? -1 : b.date > a.date ? 1 : (b.created_at || '') < (a.created_at || '') ? -1 : 1).slice(0, 5);
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hdr"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Total balance"), /*#__PURE__*/React.createElement("div", {
+    className: "big num"
+  }, fmt(balance))), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "row"
+  }, /*#__PURE__*/React.createElement(Ring, {
+    value: sv.fcPct != null ? sv.fcPct / Math.max(sv.target, .01) : 0,
+    color: fcOk ? 'var(--green)' : 'var(--amber)'
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      letterSpacing: .6,
+      fontWeight: 600
+    }
+  }, "SAVINGS · ", ymLabel(ym).toUpperCase()), /*#__PURE__*/React.createElement("div", {
+    className: "row",
+    style: {
+      alignItems: 'baseline',
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "big num"
+  }, fmtPct(sv.fcPct)), /*#__PURE__*/React.createElement("span", {
+    className: "muted small"
+  }, "forecast · target ", fmtPct(sv.target))))), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Income MTD"), /*#__PURE__*/React.createElement("div", {
+    className: "v num blue"
+  }, fmt(sv.income))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Spent MTD"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(sv.expense))))), pend.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    onClick: () => ctx.go('tx'),
+    style: {
+      cursor: 'pointer'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, "🔁 ", pend.length, " recurring bill", pend.length > 1 ? 's' : '', " to confirm"), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, fmt(sumBy(pend, t => t.amount)), " · ", pend.map(t => M.disp(t.category)).join(', '))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Watch list ", /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.go('budget')
+  }, "All budgets ›")), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, risky.length ? risky.map(r => {
+    const st = paceStatus(r, bt.prog);
+    return /*#__PURE__*/React.createElement("div", {
+      className: "bud",
+      key: r.name,
+      onClick: () => ctx.openBudget(r.name, ym)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
+      className: "t1"
+    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + st.cls
+    }, st.text)), /*#__PURE__*/React.createElement(BudgetBar, {
+      r: r,
+      prog: bt.prog
+    }), /*#__PURE__*/React.createElement(BudgetLegend, {
+      r: r,
+      prog: bt.prog
+    }));
+  }) : /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "All categories on track 👍")), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Recent ", /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.go('tx')
+  }, "See all ›")), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, recent.map(t => /*#__PURE__*/React.createElement(TxItem, {
+    key: t.id,
+    M: M,
+    t: t,
+    onClick: () => ctx.editTx(t)
+  }))), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    onClick: () => ctx.openReport(ym)
+  }, "View report ›"));
+}
+
+// ---------- Transactions ----------
+function PendingCard({
+  M,
+  ctx,
+  list
+}) {
+  const [amt, setAmt] = useState({});
+  const [busy, setBusy] = useState('');
+  const act = (t, action) => {
+    setBusy(t.id);
+    const a = amt[t.id] != null ? parseNum(amt[t.id]) : t.amount;
+    ctx.resolveRecurring({
+      id: t.id,
+      action,
+      amount: a,
+      date: action === 'confirm' && t.date > M.today ? M.today : undefined
+    }).finally(() => setBusy(''));
+  };
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Recurring to confirm"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, list.map(t => /*#__PURE__*/React.createElement("div", {
+    className: "item pending",
+    key: t.id
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(t.category)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, M.disp(t.category)), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, "Due ", t.date.slice(8, 10), "/", t.date.slice(5, 7), t.note ? ' · ' + t.note : '')), /*#__PURE__*/React.createElement("input", {
+    className: "inp num",
+    inputMode: "decimal",
+    value: amt[t.id] != null ? amt[t.id] : t.amount,
+    onChange: e => setAmt({
+      ...amt,
+      [t.id]: e.target.value
+    })
+  }), busy === t.id ? /*#__PURE__*/React.createElement("span", {
+    className: "spinner"
+  }) : /*#__PURE__*/React.createElement("div", {
+    className: "row",
+    style: {
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "pill g",
+    onClick: () => act(t, 'confirm')
+  }, "✓"), /*#__PURE__*/React.createElement("button", {
+    className: "pill n",
+    onClick: () => act(t, 'skip')
+  }, "Skip"))))));
+}
+function TransactionsPage({
+  M,
+  ctx
+}) {
+  const [ym, setYm] = ctx.ymState;
+  const [q, setQ] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+  const list = useMemo(() => {
+    let l = monthTx(M, ym);
+    if (q.trim()) {
+      const f = fold(q);
+      l = M.posted.filter(t => fold(t.note).includes(f) || fold(t.category).includes(f) || fold(M.disp(t.category)).includes(f));
+    }
+    return l;
+  }, [M, ym, q]);
+  const first = ym + '-01',
+    next = ymAdd(ym, 1) + '-01';
+  const open = balanceAt(M, first),
+    close = balanceAt(M, next);
+  const pend = M.pending.filter(t => t.date.startsWith(ym));
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hdr"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Balance"), /*#__PURE__*/React.createElement("div", {
+    className: "big num"
+  }, fmt(balanceAt(M)))), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: () => setShowSearch(!showSearch)
+  }, "🔍")), /*#__PURE__*/React.createElement("div", {
+    className: "sub"
+  }, /*#__PURE__*/React.createElement("span", null, "Cash"), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL))), showSearch && /*#__PURE__*/React.createElement("div", {
+    className: "search"
+  }, /*#__PURE__*/React.createElement("span", null, "🔍"), /*#__PURE__*/React.createElement("input", {
+    autoFocus: true,
+    placeholder: "Search note or category (all months)",
+    value: q,
+    onChange: e => setQ(e.target.value)
+  }), q && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setQ('')
+  }, "✕")), !q && /*#__PURE__*/React.createElement(MonthSwitch, {
+    ym: ym,
+    setYm: setYm,
+    today: M.today
+  }), !q && /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Opening balance"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(open))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Ending balance"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(close))), /*#__PURE__*/React.createElement("div", {
+    className: "divider"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'right'
+    },
+    className: "mid num"
+  }, fmtS(close - open)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'center',
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "txt-btn",
+    onClick: () => ctx.openReport(ym)
+  }, "View report for this period ›"))), !q && pend.length > 0 && /*#__PURE__*/React.createElement(PendingCard, {
+    M: M,
+    ctx: ctx,
+    list: pend
+  }), q && /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      margin: '0 4px 10px'
+    }
+  }, list.length, " results · total ", fmtS(sumBy(list, signed))), /*#__PURE__*/React.createElement(DayGroups, {
+    M: M,
+    list: list,
+    onEdit: ctx.editTx
+  }));
+}
+
+// ---------- Budgets ----------
+function BudgetsPage({
+  M,
+  ctx
+}) {
+  const [ym, setYm] = ctx.ymState;
+  const bt = useMemo(() => budgetTable(M, ym), [M, ym]);
+  const {
+    prog,
+    total: T
+  } = bt;
+  const sv = useMemo(() => prog.isCurrent ? savingsView(M, ym) : null, [M, ym]);
+  const st = !T.target ? {
+    cls: 'n',
+    text: 'No budget'
+  } : T.spent > T.target ? {
+    cls: 'r',
+    text: 'Over budget'
+  } : prog.isCurrent && T.spent > T.toDate ? {
+    cls: 'r',
+    text: 'Over to date'
+  } : prog.isCurrent && T.forecast > T.target ? {
+    cls: 'a',
+    text: 'Forecast over'
+  } : {
+    cls: 'g',
+    text: 'On track'
+  };
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hdr"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("h1", null, "Budgets"), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: () => ctx.editBudgets(ym)
+  }, "✏️")), /*#__PURE__*/React.createElement("div", {
+    className: "sub"
+  }, /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    className: "dot"
+  }), prog.isCurrent ? `Day ${prog.d} of ${prog.D}` : prog.d ? 'Closed month' : 'Upcoming month', " · ", ymLabel(ym)), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL))), /*#__PURE__*/React.createElement(MonthSwitch, {
+    ym: ym,
+    setYm: setYm,
+    today: M.today
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      letterSpacing: .8,
+      fontWeight: 600
+    }
+  }, prog.isCurrent ? 'SAFE TO SPEND / DAY' : 'REMAINING'), /*#__PURE__*/React.createElement("div", {
+    className: "big num"
+  }, prog.isCurrent ? fmt(T.safePerDay) : fmt(T.remaining))), /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + st.cls
+  }, "● ", st.text)), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Spent to date"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.spent))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, /*#__PURE__*/React.createElement("span", null, "Target to date"), prog.isCurrent && /*#__PURE__*/React.createElement("span", {
+    className: "green"
+  }, "Day ", prog.d)), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.toDate))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Monthly target"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.target))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, prog.isCurrent ? 'Forecast' : 'Remaining'), /*#__PURE__*/React.createElement("div", {
+    className: 'v num ' + ((prog.isCurrent ? T.forecast > T.target : T.remaining < 0) ? 'red' : 'green')
+  }, prog.isCurrent ? fmt(T.forecast) : fmt(T.remaining)))), prog.isCurrent && sv && /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Max spend for ", fmtPct(sv.target), " savings"), /*#__PURE__*/React.createElement("span", {
+    className: 'num ' + (sv.fcSpend > sv.spendLimit ? 'red' : 'green')
+  }, fmt(sv.spendLimit)))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Category budgets ", /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.editBudgets(ym)
+  }, "✏️ Edit budgets")), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, bt.rows.map(r => {
+    const s = paceStatus(r, prog);
+    return /*#__PURE__*/React.createElement("div", {
+      className: "bud",
+      key: r.name,
+      onClick: () => ctx.openBudget(r.name, ym)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic"
+    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + s.cls
+    }, s.text), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›")), /*#__PURE__*/React.createElement(BudgetBar, {
+      r: r,
+      prog: prog
+    }), /*#__PURE__*/React.createElement(BudgetLegend, {
+      r: r,
+      prog: prog
+    }));
+  }), !bt.rows.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No budgets yet")));
+}
+function BudgetDetail({
+  M,
+  ctx,
+  parent,
+  ym,
+  onBack
+}) {
+  const bt = useMemo(() => budgetTable(M, ym), [M, ym]);
+  const r = bt.rows.find(x => x.name === parent) || {
+    name: parent,
+    target: 0,
+    spent: 0,
+    toDate: 0,
+    forecast: 0,
+    children: [],
+    diffToDate: 0,
+    remaining: 0
+  };
+  const prog = bt.prog;
+  const kids = new Set(M.childrenOf[parent] || [parent]);
+  const list = monthTx(M, ym).filter(t => kids.has(t.category));
+  const s = paceStatus(r, prog);
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: M.disp(parent),
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sub muted small between",
+    style: {
+      margin: '4px 2px 12px'
+    }
+  }, /*#__PURE__*/React.createElement("span", null, ymLabel(ym), prog.isCurrent ? ` · Day ${prog.d} of ${prog.D}` : ''), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL)), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "row"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(parent)), /*#__PURE__*/React.createElement("div", {
+    className: "mid"
+  }, M.disp(parent))), /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + s.cls
+  }, s.text)), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Spent MTD"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(r.spent))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, r.fixed ? 'Fixed bill' : 'Target to date'), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, r.fixed ? '—' : fmt(r.toDate))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Monthly target"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(r.target))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Forecast"), /*#__PURE__*/React.createElement("div", {
+    className: 'v num ' + (r.forecast > r.target && r.target ? 'red' : 'green')
+  }, fmt(r.forecast)))), /*#__PURE__*/React.createElement(BudgetBar, {
+    r: r,
+    prog: prog
+  })), r.children.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Sub-categories"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, r.children.map(c => {
+    const cs = paceStatus(c, prog);
+    return /*#__PURE__*/React.createElement("div", {
+      className: "bud",
+      key: c.name,
+      onClick: () => ctx.editBudgets(ym, c.name)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, M.icon(c.name)), /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, c.name === parent ? M.disp(parent) + ' (other)' : M.disp(c.name))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + cs.cls
+    }, cs.text)), /*#__PURE__*/React.createElement(BudgetBar, {
+      r: c,
+      prog: prog
+    }), /*#__PURE__*/React.createElement(BudgetLegend, {
+      r: c,
+      prog: prog,
+      full: true
+    }));
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Transactions · ", list.length), /*#__PURE__*/React.createElement(DayGroups, {
+    M: M,
+    list: list,
+    onEdit: ctx.editTx
+  }));
+}
+
+// ---------- Report ----------
+function ReportPage({
+  M,
+  ctx,
+  ym: ym0,
+  onBack
+}) {
+  const [ym, setYm] = useState(ym0);
+  const [type, setType] = useState('expense');
+  const [drill, setDrill] = useState(null);
+  const s = monthSummary(M, ym);
+  const prev = monthSummary(M, ymAdd(ym, -1));
+  const list = reportable(M, monthTx(M, ym)).filter(t => t.type === type);
+  const byParent = {};
+  list.forEach(t => {
+    const p = M.parentOf(t.category);
+    byParent[p] = (byParent[p] || 0) + t.amount;
+  });
+  const parts = Object.keys(byParent).map(k => ({
+    k,
+    v: byParent[k]
+  })).sort((a, b) => b.v - a.v);
+  const tot = sumBy(parts, p => p.v) || 1;
+  const months = Array.from({
+    length: 12
+  }, (_, i) => ymAdd(ym, i - 11));
+  const series = months.map(m => monthSummary(M, m));
+  const ref = useRef(null);
+  useChart(ref, {
+    type: 'bar',
+    data: {
+      labels: months.map(ymShort),
+      datasets: [{
+        label: 'Income',
+        data: series.map(x => x.income),
+        backgroundColor: '#3B8BFF',
+        borderRadius: 4
+      }, {
+        label: 'Expense',
+        data: series.map(x => x.expense),
+        backgroundColor: '#FF5A52',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: {
+            color: '#8E8E93',
+            boxWidth: 10
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: c => c.dataset.label + ': ' + fmt(c.raw)
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: '#8E8E93',
+            font: {
+              size: 10
+            }
+          },
+          grid: {
+            display: false
+          }
+        },
+        y: {
+          ticks: {
+            color: '#8E8E93',
+            callback: v => fmt(v)
+          },
+          grid: {
+            color: '#2A2A2D'
+          }
+        }
+      }
+    }
+  }, ym);
+  if (drill) {
+    const kids = new Set(M.childrenOf[drill] || [drill]);
+    return /*#__PURE__*/React.createElement(FullPage, {
+      title: M.disp(drill),
+      onBack: () => setDrill(null)
+    }, /*#__PURE__*/React.createElement(DayGroups, {
+      M: M,
+      list: list.filter(t => kids.has(t.category)),
+      onEdit: ctx.editTx
+    }));
+  }
+  const delta = (cur, p) => p ? (cur - p) / p : null;
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Report",
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement(MonthSwitch, {
+    ym: ym,
+    setYm: setYm,
+    today: M.today
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kgrid",
+    style: {
+      marginTop: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Income"), /*#__PURE__*/React.createElement("div", {
+    className: "v num blue"
+  }, fmt(s.income)), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, "vs last month ", fmtPct(delta(s.income, prev.income)))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Expense"), /*#__PURE__*/React.createElement("div", {
+    className: "v num red"
+  }, fmt(s.expense)), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, "vs last month ", fmtPct(delta(s.expense, prev.expense)))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Net"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmtS(s.net))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Saving rate"), /*#__PURE__*/React.createElement("div", {
+    className: 'v num ' + (s.income && s.net / s.income >= (M.settings.savings_target || .45) ? 'green' : 'amber')
+  }, s.income ? fmtPct(s.net / s.income) : '—')))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Last 12 months"), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "chart-box"
+  }, /*#__PURE__*/React.createElement("canvas", {
+    ref: ref
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "typeseg"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: 'e' + (type === 'expense' ? ' on' : ''),
+    onClick: () => setType('expense')
+  }, "Expense"), /*#__PURE__*/React.createElement("button", {
+    className: 'i' + (type === 'income' ? ' on' : ''),
+    onClick: () => setType('income')
+  }, "Income")), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, parts.map(p => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: p.k,
+    onClick: () => setDrill(p.k)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, M.icon(p.k)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1 ellipsis"
+  }, M.disp(p.k)), /*#__PURE__*/React.createElement("span", {
+    className: "amt num"
+  }, fmt(p.v))), /*#__PURE__*/React.createElement("div", {
+    className: "hbar"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: p.v / tot * 100 + '%',
+      background: type === 'income' ? 'var(--blue)' : 'var(--green)'
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, fmtPct(p.v / tot))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))), !parts.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No data")));
+}
+
+// ===================================================================
+// ADD / EDIT transaction · quick entry · category picker · edit budgets
+// ===================================================================
+function CategoryPicker({
+  M,
+  type,
+  value,
+  onPick,
+  top
+}) {
+  const recent = (top || []).filter(n => M.catBy[n]);
+  const parents = M.cats.filter(c => c.type === type && !c.parent && c.active !== false && !(c.name === 'Điều chỉnh số dư' && c.name !== value)).sort((a, b) => a.sort - b.sort);
+  return [recent.length ? /*#__PURE__*/React.createElement("div", {
+    key: "__top"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "parent-lbl"
+  }, "Frequent"), /*#__PURE__*/React.createElement("div", {
+    className: "catgrid"
+  }, recent.map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    className: value === n ? 'on' : '',
+    onClick: () => onPick(n)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+    className: "ellipsis",
+    style: {
+      maxWidth: '100%'
+    }
+  }, M.disp(n)))))) : null].concat(parents.map(p => {
+    const kids = (M.childrenOf[p.name] || []).filter(n => n !== p.name && M.catBy[n].active !== false);
+    return /*#__PURE__*/React.createElement("div", {
+      key: p.name
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "parent-lbl"
+    }, p.display), /*#__PURE__*/React.createElement("div", {
+      className: "catgrid"
+    }, [p.name].concat(kids).map(n => /*#__PURE__*/React.createElement("button", {
+      key: n,
+      className: value === n ? 'on' : '',
+      onClick: () => onPick(n)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic"
+    }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+      className: "ellipsis",
+      style: {
+        maxWidth: '100%'
+      }
+    }, M.disp(n))))));
+  }));
+}
+
+/** Màn chọn nhóm kiểu Money Lover: tab Expense/Income, tìm kiếm, nhóm hay dùng, danh sách cha → con. */
+function CategorySelect({
+  M,
+  type,
+  value,
+  onPick,
+  onClose
+}) {
+  const [tab, setTab] = useState(type || 'expense');
+  const [q, setQ] = useState('');
+  const top = useMemo(() => suggestCategories(M, tab).slice(0, 8), [M, tab]);
+  const fq = fold(q);
+  const ok = n => !fq || fold(M.disp(n)).includes(fq) || fold(n).includes(fq);
+  const parents = M.cats.filter(c => c.type === tab && !c.parent && c.active !== false && c.name !== 'Điều chỉnh số dư').sort((a, b) => a.sort - b.sort);
+  const row = (n, child, last) => /*#__PURE__*/React.createElement("div", {
+    key: n,
+    className: 'cs-row' + (child ? ' child' : '') + (last ? ' last' : '') + (value === n ? ' on' : ''),
+    onClick: () => onPick(n, tab)
+  }, child && /*#__PURE__*/React.createElement("span", {
+    className: "cs-tree"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, M.disp(n)), value === n && /*#__PURE__*/React.createElement("span", {
+    className: "green"
+  }, "✓"));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "cs-full"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sheet-top"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "txt-btn",
+    onClick: onClose
+  }, "‹ Back"), /*#__PURE__*/React.createElement("div", {
+    className: "ttl"
+  }, "Select category"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 52
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    style: {
+      marginTop: 0
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: tab === 'expense' ? 'on' : '',
+    onClick: () => setTab('expense')
+  }, "EXPENSE"), /*#__PURE__*/React.createElement("button", {
+    className: tab === 'income' ? 'on' : '',
+    onClick: () => setTab('income')
+  }, "INCOME")), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", null, "🔍"), /*#__PURE__*/React.createElement("input", {
+    placeholder: "Search",
+    value: q,
+    onChange: e => setQ(e.target.value),
+    autoCorrect: "off"
+  })), !fq && top.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "parent-lbl"
+  }, "Frequent"), /*#__PURE__*/React.createElement("div", {
+    className: "catgrid",
+    style: {
+      marginBottom: 6
+    }
+  }, top.map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    className: value === n ? 'on' : '',
+    onClick: () => onPick(n, tab)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+    className: "ellipsis",
+    style: {
+      maxWidth: '100%'
+    }
+  }, M.disp(n)))))), /*#__PURE__*/React.createElement("div", {
+    className: "card tight",
+    style: {
+      padding: 0
+    }
+  }, parents.map(p => {
+    const kids = (M.childrenOf[p.name] || []).filter(n => n !== p.name && M.catBy[n].active !== false && ok(n));
+    if (!ok(p.name) && !kids.length) return null;
+    return /*#__PURE__*/React.createElement("div", {
+      key: p.name,
+      className: "cs-group"
+    }, row(p.name, false), kids.map((k, i) => row(k, true, i === kids.length - 1)));
+  })));
+}
+const ymdOf = dt => dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+const dateLabel = (d, today) => {
+  if (d === today) return 'Today';
+  const y = new Date(today + 'T00:00:00');
+  y.setDate(y.getDate() - 1);
+  if (d === ymdOf(y)) return 'Yesterday';
+  const dt = new Date(d + 'T00:00:00');
+  return dt.toLocaleDateString('en-US', {
+    weekday: 'long'
+  }) + ', ' + d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4);
+};
+function AddTxSheet({
+  M,
+  ctx,
+  tx,
+  quickMode,
+  onClose
+}) {
+  const editing = !!(tx && tx.id);
+  const [type, setType] = useState(tx ? tx.type : 'expense');
+  const [amount, setAmount] = useState(tx && tx.amount ? String(tx.amount) : '');
+  const [category, setCategory] = useState(tx ? tx.category : '');
+  const [auto, setAuto] = useState(false); // nhóm đang là đoán tự động theo số tiền
+  const [note, setNote] = useState(tx ? tx.note || '' : '');
+  const [date, setDate] = useState(tx ? tx.date : M.today);
+  const [quick, setQuick] = useState('');
+  const [picker, setPicker] = useState(false);
+  const [kp, setKp] = useState(!editing); // thêm mới: bàn phím số mở sẵn như Money Lover
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const quickAmts = String(M.settings.quick_amounts || '').split(',').map(s => parseNum(s)).filter(Boolean);
+  const onQuick = v => {
+    setQuick(v);
+    const p = parseQuick(M, v);
+    if (p.amount != null) setAmount(String(p.amount));
+    if (p.category) {
+      setCategory(p.category);
+      setAuto(false);
+      if (p.type) setType(p.type);
+    }
+    setNote(p.note || '');
+  };
+  const key = k => {
+    setAmount(a => {
+      if (k === '⌫') return a.slice(0, -1);
+      if (k === 'C') return '';
+      if (k === '00') return a ? a + '00' : a;
+      if (k === '000') return a ? a + '000' : a;
+      if (a === '0') return k;
+      return a + k;
+    });
+  };
+  const save = () => {
+    const amt = parseNum(amount);
+    if (!(amt > 0)) {
+      setErr('Enter an amount');
+      setKp(true);
+      return;
+    }
+    if (!category) {
+      setPicker(true);
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    ctx.saveTx({
+      id: tx && tx.id,
+      date,
+      type,
+      category,
+      amount: amt,
+      note: note.trim(),
+      wallet: tx && tx.wallet || 'Cash',
+      status: tx && tx.status === 'pending' ? 'posted' : undefined
+    }).then(onClose).catch(e => {
+      setErr(String(e));
+      setBusy(false);
+    });
+  };
+  // Đoán nhóm theo số tiền khi chưa chọn tay
+  useEffect(() => {
+    if (editing || category && !auto) return;
+    const c = predictByAmount(M, type, parseNum(amount));
+    if (c) {
+      setCategory(c);
+      setAuto(true);
+    } else if (auto) {
+      setCategory('');
+      setAuto(false);
+    }
+  }, [amount]);
+  const done = () => {
+    setKp(false);
+    if (!category) setPicker(true);
+  };
+  const del = () => {
+    if (!confirm('Delete this transaction?')) return;
+    setBusy(true);
+    ctx.deleteTx(tx.id).then(onClose).catch(e => {
+      setErr(String(e));
+      setBusy(false);
+    });
+  };
+  const amtColor = type === 'income' ? 'var(--blue)' : 'var(--green)';
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: editing ? 'Edit transaction' : 'Add transaction',
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, !editing && quickMode && /*#__PURE__*/React.createElement("div", {
+    className: "quick"
+  }, /*#__PURE__*/React.createElement("span", null, "⚡"), /*#__PURE__*/React.createElement("input", {
+    placeholder: "Quick entry: \"cf 35\"",
+    value: quick,
+    onChange: e => onQuick(e.target.value),
+    onFocus: () => setKp(false),
+    onKeyDown: e => {
+      if (e.key === 'Enter') save();
+    },
+    autoCapitalize: "off",
+    autoCorrect: "off"
+  }), quick && /*#__PURE__*/React.createElement("button", {
+    className: "muted",
+    onClick: () => onQuick('')
+  }, "✕")), /*#__PURE__*/React.createElement("div", {
+    className: "mlform"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: 'mlrow amt' + (kp ? ' focus' : ''),
+    onClick: () => setKp(true)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "curbox"
+  }, "K"), /*#__PURE__*/React.createElement("span", {
+    className: "mlamt num",
+    style: {
+      color: amount ? amtColor : 'var(--muted)'
+    }
+  }, amount ? fmt(parseNum(amount)) : '0')), /*#__PURE__*/React.createElement("div", {
+    className: "mlrow",
+    onClick: () => {
+      setKp(false);
+      setPicker(true);
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, category ? M.icon(category) : '❔'), /*#__PURE__*/React.createElement("span", {
+    className: 'grow ml-big' + (category ? '' : ' muted')
+  }, category ? M.disp(category) : 'Select category', auto && /*#__PURE__*/React.createElement("span", {
+    className: "pill g",
+    style: {
+      marginLeft: 8,
+      fontSize: 11
+    }
+  }, "auto")), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("div", {
+    className: "mlrow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ml-ic"
+  }, "≡"), /*#__PURE__*/React.createElement("input", {
+    className: "grow",
+    placeholder: "Write note",
+    value: note,
+    onChange: e => setNote(e.target.value),
+    onFocus: () => setKp(false)
+  })), /*#__PURE__*/React.createElement("label", {
+    className: "mlrow",
+    style: {
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ml-ic"
+  }, "📅"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, dateLabel(date, M.today)), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    className: "ml-date",
+    value: date,
+    onChange: e => e.target.value && setDate(e.target.value),
+    onFocus: () => setKp(false)
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mlrow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ml-ic"
+  }, "👛"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, tx && tx.wallet || 'Cash'))), /*#__PURE__*/React.createElement(ErrBox, {
+    msg: err
+  }), !kp && /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: save,
+    disabled: busy,
+    style: {
+      marginTop: 6
+    }
+  }, busy ? '…' : 'Save'), editing && !kp && /*#__PURE__*/React.createElement("button", {
+    className: "btn danger",
+    onClick: del,
+    disabled: busy,
+    style: {
+      marginTop: 10
+    }
+  }, "Delete"), kp && /*#__PURE__*/React.createElement("div", {
+    className: "kpwrap"
+  }, quickAmts.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "chips",
+    style: {
+      marginBottom: 6
+    }
+  }, quickAmts.map(a => /*#__PURE__*/React.createElement("button", {
+    key: 'a' + a,
+    className: "chip num",
+    onClick: () => setAmount(String(a))
+  }, fmt(a)))), /*#__PURE__*/React.createElement("div", {
+    className: "keypad num",
+    style: {
+      marginTop: 0
+    }
+  }, ['7', '8', '9', '⌫', '4', '5', '6', 'C', '1', '2', '3'].map(k => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    className: '⌫C'.includes(k) ? 'op' : '',
+    onClick: () => key(k)
+  }, k)), /*#__PURE__*/React.createElement("button", {
+    className: "ok",
+    onClick: done
+  }, "✓"), ['000', '0', '00'].map(k => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => key(k)
+  }, k)))), picker && /*#__PURE__*/React.createElement(CategorySelect, {
+    M: M,
+    type: type,
+    value: category,
+    onClose: () => setPicker(false),
+    onPick: (n, t) => {
+      setCategory(n);
+      setAuto(false);
+      setType(t);
+      setPicker(false);
+      setErr('');
+      if (!parseNum(amount)) setKp(true);
+    }
+  }));
+}
+
+/** Sửa budget: mặc định (mọi tháng) hoặc chỉ tháng ym. */
+function EditBudgetsSheet({
+  M,
+  ctx,
+  ym,
+  focus,
+  onClose
+}) {
+  const [scope, setScope] = useState('default');
+  const [draft, setDraft] = useState({});
+  const [busy, setBusy] = useState(false);
+  const key = budgetMonthKey(ym);
+  const cur = {};
+  M.boot.budgets.forEach(b => {
+    if (b.month === 'default') cur[b.category] = b.amount;
+  });
+  const monthOnly = {};
+  M.boot.budgets.forEach(b => {
+    if (b.month === key) monthOnly[b.category] = b.amount;
+  });
+  const val = c => draft[scope + '|' + c] != null ? draft[scope + '|' + c] : (scope === 'default' ? cur[c] : monthOnly[c]) ?? '';
+  const parents = M.cats.filter(c => c.type === 'expense' && !c.parent && !c.exclude && c.active !== false).sort((a, b) => a.sort - b.sort);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (focus && ref.current) ref.current.scrollIntoView({
+      block: 'center'
+    });
+  }, []);
+  const total = parents.reduce((s, p) => s + (M.childrenOf[p.name] || []).reduce((ss, c) => ss + (Number(val(c)) || (scope === 'month' ? cur[c] || 0 : 0)), 0), 0);
+  const save = async () => {
+    setBusy(true);
+    try {
+      for (const k of Object.keys(draft)) {
+        const [sc, c] = k.split('|');
+        await rpc('saveBudget', {
+          month: sc === 'default' ? 'default' : key,
+          category: c,
+          amount: parseNum(draft[k]) || 0
+        });
+      }
+      await ctx.reload('Budgets saved');
+      onClose();
+    } catch (e) {
+      alert(e);
+      setBusy(false);
+    }
+  };
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: "Edit budgets",
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "typeseg"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: 'e' + (scope === 'default' ? ' on' : ''),
+    onClick: () => setScope('default')
+  }, "Every month"), /*#__PURE__*/React.createElement("button", {
+    className: 'i' + (scope === 'month' ? ' on' : ''),
+    onClick: () => setScope('month')
+  }, "Only ", ymShort(ym))), /*#__PURE__*/React.createElement("div", {
+    className: "between muted small",
+    style: {
+      margin: '0 4px 8px'
+    }
+  }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, "Total ", fmt(total))), parents.map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.name
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "parent-lbl"
+  }, p.icon, " ", p.display), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, (M.childrenOf[p.name] || []).filter(c => M.catBy[c].active !== false).map(c => /*#__PURE__*/React.createElement("div", {
+    className: "item",
+    key: c,
+    ref: c === focus ? ref : null,
+    style: c === focus ? {
+      background: 'var(--card2)'
+    } : null
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow ellipsis"
+  }, c === p.name ? p.display + ' (general)' : M.disp(c)), /*#__PURE__*/React.createElement("input", {
+    className: "inp num",
+    inputMode: "decimal",
+    placeholder: scope === 'month' && cur[c] ? fmt(cur[c]) : '0',
+    value: val(c),
+    onChange: e => setDraft({
+      ...draft,
+      [scope + '|' + c]: e.target.value
+    })
+  })))))));
+}
+
+// ===================================================================
+// ACCOUNT — settings · recurring · categories · export
+// ===================================================================
+function AccountPage({
+  M,
+  ctx
+}) {
+  const [sub, setSub] = useState('');
+  const [target, setTarget] = useState(Math.round((Number(M.settings.savings_target) || .45) * 100));
+  const [qa, setQa] = useState(String(M.settings.quick_amounts || ''));
+  const saveSetting = (k, v) => rpc('saveSetting', {
+    key: k,
+    value: v
+  }).then(() => ctx.reload('Saved')).catch(ctx.fail);
+  const exportCsv = () => {
+    try {
+      const blob = new Blob([toCsv(M)], {
+        type: 'text/csv;charset=utf-8'
+      });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'transactions_' + M.today + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      ctx.fail('Download blocked — open the Google Sheet and use File › Download › CSV.');
+    }
+  };
+  if (sub === 'recurring') return /*#__PURE__*/React.createElement(RecurringPage, {
+    M: M,
+    ctx: ctx,
+    onBack: () => setSub('')
+  });
+  if (sub === 'help') return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Help",
+    onBack: () => setSub('')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setSub('help')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "❓"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Help"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")));
+  if (sub === 'categories') return /*#__PURE__*/React.createElement(CategoriesPage, {
+    M: M,
+    ctx: ctx,
+    onBack: () => setSub('')
+  });
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hdr"
+  }, /*#__PURE__*/React.createElement("h1", null, "Account"), /*#__PURE__*/React.createElement("div", {
+    className: "sub"
+  }, /*#__PURE__*/React.createElement("span", null, "Personal · Cash wallet"), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Goals"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "item"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Savings target (% of income)"), /*#__PURE__*/React.createElement("input", {
+    className: "inp num",
+    inputMode: "numeric",
+    value: target,
+    onChange: e => setTarget(e.target.value),
+    onBlur: () => saveSetting('savings_target', (parseNum(target) || 45) / 100)
+  }), "%"), /*#__PURE__*/React.createElement("div", {
+    className: "item"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Quick amounts"), /*#__PURE__*/React.createElement("input", {
+    className: "inp",
+    style: {
+      width: 140
+    },
+    value: qa,
+    onChange: e => setQa(e.target.value),
+    onBlur: () => saveSetting('quick_amounts', qa)
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Manage"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setSub('recurring')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "🔁"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Recurring bills"), /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, M.boot.recurring.filter(r => r.active).length), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => ctx.editBudgets(ymOf(M.today))
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "🎯"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Budgets"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setSub('categories')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "🗂️"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Categories & quick-entry aliases"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Data"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: exportCsv
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "⬇️"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Export CSV"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("a", {
+    className: "item tap",
+    href: M.boot.meta.sheetUrl,
+    target: "_blank",
+    style: {
+      color: 'inherit',
+      textDecoration: 'none'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "📄"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Open Google Sheet"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "↗")), /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => ctx.reload('Refreshed')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "🔄"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Refresh data")), /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setSub('help')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "❓"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Help"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))));
+}
+function RecurringPage({
+  M,
+  ctx,
+  onBack
+}) {
+  const [edit, setEdit] = useState(null);
+  const list = M.boot.recurring;
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Recurring bills",
+    onBack: onBack,
+    right: /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: () => setEdit({
+        category: '',
+        amount: '',
+        day: 5,
+        note: '',
+        active: true
+      })
+    }, "＋")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, list.map(r => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: r.id,
+    onClick: () => setEdit(r),
+    style: {
+      opacity: r.active ? 1 : .45
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, M.icon(r.category)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, M.disp(r.category)), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, "Day ", r.day, " · ", r.note || '—', r.active ? '' : ' · paused')), /*#__PURE__*/React.createElement("div", {
+    className: "amt num"
+  }, fmt(r.amount)))), !list.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No recurring bills")), edit && /*#__PURE__*/React.createElement(RecurringEdit, {
+    M: M,
+    ctx: ctx,
+    r: edit,
+    onClose: () => setEdit(null)
+  }));
+}
+function RecurringEdit({
+  M,
+  ctx,
+  r,
+  onClose
+}) {
+  const [f, setF] = useState({
+    ...r,
+    amount: String(r.amount || '')
+  });
+  const [picker, setPicker] = useState(!r.category);
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    setBusy(true);
+    rpc('saveRecurring', {
+      ...f,
+      amount: parseNum(f.amount)
+    }).then(() => ctx.reload('Saved')).then(onClose).catch(e => {
+      ctx.fail(e);
+      setBusy(false);
+    });
+  };
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: r.id ? 'Edit recurring' : 'New recurring',
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field",
+    onClick: () => setPicker(!picker)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, f.category ? M.icon(f.category) : '❔'), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, f.category ? M.disp(f.category) : /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Select category")), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), picker && /*#__PURE__*/React.createElement(CategoryPicker, {
+    M: M,
+    type: "expense",
+    value: f.category,
+    onPick: n => {
+      setF({
+        ...f,
+        category: n
+      });
+      setPicker(false);
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Amount"), /*#__PURE__*/React.createElement("input", {
+    className: "num",
+    style: {
+      textAlign: 'right'
+    },
+    inputMode: "decimal",
+    value: f.amount,
+    onChange: e => setF({
+      ...f,
+      amount: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Due day (1–28)"), /*#__PURE__*/React.createElement("input", {
+    className: "num",
+    style: {
+      textAlign: 'right'
+    },
+    inputMode: "numeric",
+    value: f.day,
+    onChange: e => setF({
+      ...f,
+      day: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", null, "📝"), /*#__PURE__*/React.createElement("input", {
+    placeholder: "Note",
+    value: f.note,
+    onChange: e => setF({
+      ...f,
+      note: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Active"), /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    style: {
+      flex: 'none',
+      width: 22,
+      height: 22
+    },
+    checked: f.active,
+    onChange: e => setF({
+      ...f,
+      active: e.target.checked
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      margin: '4px 4px'
+    }
+  }, UNIT_LABEL));
+}
+function CategoriesPage({
+  M,
+  ctx,
+  onBack
+}) {
+  const [edit, setEdit] = useState(null);
+  const [type, setType] = useState('expense');
+  const parents = M.cats.filter(c => c.type === type && !c.parent).sort((a, b) => a.sort - b.sort);
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Categories",
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "typeseg"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: 'e' + (type === 'expense' ? ' on' : ''),
+    onClick: () => setType('expense')
+  }, "Expense"), /*#__PURE__*/React.createElement("button", {
+    className: 'i' + (type === 'income' ? ' on' : ''),
+    onClick: () => setType('income')
+  }, "Income")), parents.map(p => /*#__PURE__*/React.createElement("div", {
+    className: "card tight",
+    key: p.name
+  }, (M.childrenOf[p.name] || [p.name]).map(n => {
+    const c = M.catBy[n];
+    return /*#__PURE__*/React.createElement("div", {
+      className: "item tap",
+      key: n,
+      onClick: () => setEdit(c),
+      style: {
+        opacity: c.active === false ? .4 : 1,
+        paddingLeft: n === p.name ? 16 : 36
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, c.icon), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "t1"
+    }, c.display, c.display !== c.name ? /*#__PURE__*/React.createElement("span", {
+      className: "muted small"
+    }, " · ", c.name) : null), /*#__PURE__*/React.createElement("div", {
+      className: "t2"
+    }, [c.alias && 'alias: ' + c.alias, c.fixed && 'fixed bill', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›"));
+  }))), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    onClick: () => setEdit({
+      name: '',
+      display: '',
+      type,
+      parent: '',
+      icon: '🏷️',
+      alias: '',
+      fixed: false,
+      exclude: false,
+      active: true,
+      isNew: true
+    })
+  }, "＋ New category"), edit && /*#__PURE__*/React.createElement(CategoryEdit, {
+    M: M,
+    ctx: ctx,
+    c: edit,
+    onClose: () => setEdit(null)
+  }));
+}
+function CategoryEdit({
+  M,
+  ctx,
+  c,
+  onClose
+}) {
+  const [f, setF] = useState({
+    ...c
+  });
+  const [busy, setBusy] = useState(false);
+  const parents = M.cats.filter(x => x.type === f.type && !x.parent && x.name !== c.name);
+  const save = () => {
+    if (!f.name.trim()) {
+      ctx.fail('Name is required');
+      return;
+    }
+    if (c.isNew && M.catBy[f.name.trim()]) {
+      ctx.fail('Category already exists');
+      return;
+    }
+    setBusy(true);
+    const {
+      isNew,
+      ...rest
+    } = f;
+    rpc('saveCategory', {
+      ...rest,
+      name: f.name.trim(),
+      display: f.display.trim() || f.name.trim()
+    }).then(() => ctx.reload('Saved')).then(onClose).catch(e => {
+      ctx.fail(e);
+      setBusy(false);
+    });
+  };
+  const bool = (k, label) => /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, label), /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    style: {
+      flex: 'none',
+      width: 22,
+      height: 22
+    },
+    checked: !!f[k],
+    onChange: e => setF({
+      ...f,
+      [k]: e.target.checked
+    })
+  }));
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: c.isNew ? 'New category' : 'Edit category',
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, c.isNew && /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Name (key)"), /*#__PURE__*/React.createElement("input", {
+    style: {
+      textAlign: 'right'
+    },
+    value: f.name,
+    onChange: e => setF({
+      ...f,
+      name: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Display name"), /*#__PURE__*/React.createElement("input", {
+    style: {
+      textAlign: 'right'
+    },
+    value: f.display,
+    onChange: e => setF({
+      ...f,
+      display: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Icon (emoji)"), /*#__PURE__*/React.createElement("input", {
+    style: {
+      textAlign: 'right'
+    },
+    value: f.icon,
+    onChange: e => setF({
+      ...f,
+      icon: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Aliases"), /*#__PURE__*/React.createElement("input", {
+    style: {
+      textAlign: 'right'
+    },
+    placeholder: "cf cafe",
+    value: f.alias,
+    onChange: e => setF({
+      ...f,
+      alias: e.target.value
+    }),
+    autoCapitalize: "off"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Parent"), /*#__PURE__*/React.createElement("select", {
+    value: f.parent,
+    onChange: e => setF({
+      ...f,
+      parent: e.target.value
+    }),
+    style: {
+      textAlign: 'right',
+      flex: 'none'
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.name,
+    value: p.name
+  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+}
+
+// ===================================================================
+// APP — state, RPC actions (cập nhật lạc quan rồi tải lại nền), nav
+// ===================================================================
+const TABS = [{
+  id: 'home',
+  label: 'Overview',
+  icon: '🏠'
+}, {
+  id: 'tx',
+  label: 'Transactions',
+  icon: '🧾'
+}, {
+  id: 'add'
+}, {
+  id: 'budget',
+  label: 'Budgets',
+  icon: '🎯'
+}, {
+  id: 'account',
+  label: 'Account',
+  icon: '👤'
+}];
+function App() {
+  const [boot, setBoot] = useState(null);
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
+  const [tab, setTab] = useState(() => {
+    try {
+      return localStorage.getItem('exp_tab') || 'home';
+    } catch (e) {
+      return 'home';
+    }
+  });
+  const [sheet, setSheet] = useState(null); // {kind:'tx', tx} | {kind:'budgets', ym, focus}
+  const [overlay, setOverlay] = useState(null); // {kind:'budget', parent, ym} | {kind:'report', ym}
+  const M = useMemo(() => boot ? buildModel(boot) : null, [boot]);
+  const ymState = useState(() => boot ? ymOf(boot.today) : null);
+  const [ym, setYm] = ymState;
+  const versionRef = useRef(null);
+  const toastTimer = useRef(null);
+  const say = msg => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(''), 2200);
+  };
+  const fail = e => {
+    say('⚠️ ' + String(e));
+  };
+  const load = useCallback(() => rpc('getBootstrap').then(b => {
+    versionRef.current = b.version;
+    setBoot(b);
+    setError('');
+    return b;
+  }).catch(e => {
+    setError(String(e));
+    throw e;
+  }), []);
+  const reload = msg => load().then(() => {
+    if (msg) say(msg);
+  });
+  useEffect(() => {
+    load().then(b => {
+      setYm(ymOf(b.today));
+    }).catch(() => {});
+    readUrlParams().then(p => {
+      if (p.add === '1') setSheet({
+        kind: 'tx',
+        tx: null,
+        quick: true
+      });
+    });
+    const poll = () => rpc('getVersion').then(r => {
+      if (versionRef.current && r.version !== versionRef.current) load();
+    }).catch(() => {});
+    const iv = setInterval(poll, 5 * 60 * 1000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') poll();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem('exp_tab', tab);
+    } catch (e) {/* ignore */}
+  }, [tab]);
+
+  // Ghi đè cục bộ ngay để UI phản hồi tức thì, sau đó tải lại từ server.
+  const patchLocal = fn => setBoot(b => {
+    const cols = b.tx.cols,
+      rows = b.tx.rows.map(r => r.slice());
+    const toObj = r => {
+      const o = {};
+      cols.forEach((c, i) => {
+        o[c] = r[i];
+      });
+      return o;
+    };
+    const toRow = o => cols.map(c => o[c] == null ? '' : o[c]);
+    const next = fn(rows.map(toObj));
+    return {
+      ...b,
+      tx: {
+        cols,
+        rows: next.map(toRow)
+      }
+    };
+  });
+  const ctx = {
+    ymState,
+    go: setTab,
+    fail,
+    reload,
+    editTx: t => setSheet({
+      kind: 'tx',
+      tx: t
+    }),
+    openBudget: (parent, ym) => setOverlay({
+      kind: 'budget',
+      parent,
+      ym
+    }),
+    openReport: ym => setOverlay({
+      kind: 'report',
+      ym
+    }),
+    editBudgets: (ym, focus) => setSheet({
+      kind: 'budgets',
+      ym,
+      focus
+    }),
+    saveTx: t => rpc('saveTransaction', t).then(res => {
+      patchLocal(list => {
+        const rec = {
+          ...t,
+          id: res.id,
+          source: t.id ? undefined : 'manual',
+          status: 'posted',
+          created_at: t.id ? undefined : new Date().toISOString()
+        };
+        const i = list.findIndex(x => x.id === res.id);
+        if (i >= 0) {
+          list[i] = {
+            ...list[i],
+            ...Object.fromEntries(Object.entries(rec).filter(([, v]) => v !== undefined))
+          };
+          return list;
+        }
+        return list.concat([{
+          wallet: 'Cash',
+          note: '',
+          recurring_id: '',
+          ...rec
+        }]);
+      });
+      say(t.id ? 'Updated' : 'Saved ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : ''));
+      load().catch(() => {});
+    }),
+    deleteTx: id => rpc('deleteTransaction', id).then(() => {
+      patchLocal(list => list.filter(x => x.id !== id));
+      say('Deleted');
+      load().catch(() => {});
+    }),
+    resolveRecurring: p => rpc('resolveRecurring', p).then(() => {
+      patchLocal(list => p.action === 'skip' ? list.filter(x => x.id !== p.id) : list.map(x => x.id === p.id ? {
+        ...x,
+        status: 'posted',
+        amount: p.amount != null ? p.amount : x.amount,
+        date: p.date || x.date
+      } : x));
+      say(p.action === 'skip' ? 'Skipped' : 'Confirmed');
+      load().catch(() => {});
+    }).catch(fail)
+  };
+  if (!M) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "app"
+    }, error ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(ErrBox, {
+      msg: error
+    }), /*#__PURE__*/React.createElement("button", {
+      className: "btn",
+      onClick: () => load().catch(() => {})
+    }, "Retry")) : /*#__PURE__*/React.createElement("div", {
+      className: "empty"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }), " Loading…"));
+  }
+  const page = tab === 'tx' ? /*#__PURE__*/React.createElement(TransactionsPage, {
+    M: M,
+    ctx: ctx
+  }) : tab === 'budget' ? /*#__PURE__*/React.createElement(BudgetsPage, {
+    M: M,
+    ctx: ctx
+  }) : tab === 'account' ? /*#__PURE__*/React.createElement(AccountPage, {
+    M: M,
+    ctx: ctx
+  }) : /*#__PURE__*/React.createElement(OverviewPage, {
+    M: M,
+    ctx: ctx
+  });
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "app"
+  }, /*#__PURE__*/React.createElement(ErrBox, {
+    msg: error
+  }), ym && page), overlay && overlay.kind === 'budget' && /*#__PURE__*/React.createElement(BudgetDetail, {
+    M: M,
+    ctx: ctx,
+    parent: overlay.parent,
+    ym: overlay.ym,
+    onBack: () => setOverlay(null)
+  }), overlay && overlay.kind === 'report' && /*#__PURE__*/React.createElement(ReportPage, {
+    M: M,
+    ctx: ctx,
+    ym: overlay.ym,
+    onBack: () => setOverlay(null)
+  }), /*#__PURE__*/React.createElement("nav", {
+    className: "nav"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "nav-in"
+  }, TABS.map(t => t.id === 'add' ? /*#__PURE__*/React.createElement("button", {
+    key: "add",
+    className: "fab",
+    onClick: () => setSheet({
+      kind: 'tx',
+      tx: null
+    })
+  }, "+") : /*#__PURE__*/React.createElement("button", {
+    key: t.id,
+    className: tab === t.id && !overlay ? 'on' : '',
+    onClick: () => {
+      setOverlay(null);
+      setTab(t.id);
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "i"
+  }, t.icon), t.label)))), sheet && sheet.kind === 'tx' && /*#__PURE__*/React.createElement(AddTxSheet, {
+    M: M,
+    ctx: ctx,
+    tx: sheet.tx,
+    quickMode: !!sheet.quick,
+    onClose: () => setSheet(null)
+  }), sheet && sheet.kind === 'budgets' && /*#__PURE__*/React.createElement(EditBudgetsSheet, {
+    M: M,
+    ctx: ctx,
+    ym: sheet.ym,
+    focus: sheet.focus,
+    onClose: () => setSheet(null)
+  }), /*#__PURE__*/React.createElement(Toast, {
+    toast: toast
+  }));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>
