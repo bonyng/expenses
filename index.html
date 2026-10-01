@@ -35,8 +35,9 @@
     if (k && k.trim()) { try { localStorage.setItem(KEY, k.trim()); } catch (e) {} location.reload(); }
   }
   function call(fn, args) {
-    return fetch(API, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ fn: fn, args: args, key: getKey() }) }).then(function (r) { return r.json(); });
+    // GET ?q=: iOS Safari làm rơi thân POST khi đi qua redirect của Apps Script.
+    var q = encodeURIComponent(JSON.stringify({ fn: fn, args: args, key: getKey() }));
+    return fetch(API + '?q=' + q + '&_=' + Date.now(), { redirect: 'follow', cache: 'no-store' }).then(function (r) { return r.json(); });
   }
   function runner(ok, fail) {
     return new Proxy({}, { get: function (_, p) {
@@ -45,6 +46,7 @@
       return function () {
         call(p, [].slice.call(arguments)).then(function (res) {
           if (res && res.error === 'Unauthorized') { askKey(); if (fail) fail('Access key required'); return; }
+          if (!res || res.service === 'expense-api') { if (fail) fail('Unexpected API response'); return; }
           if (ok) ok(res);
         }).catch(function (e) { if (fail) fail('Network error: ' + (e && e.message || e)); });
       };
