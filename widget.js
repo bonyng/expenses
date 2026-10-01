@@ -51,11 +51,10 @@ async function build() {
     text(w, key ? "Can't load data" : "Run in Scriptable to set key", 12, MUTED);
     return w;
   }
-  text(w, "💰 Balance", 12, MUTED);
-  text(w, fmt(d.balance), 26, Color.white(), true);
-  w.addSpacer(8);
-  text(w, "Spent MTD", 11, MUTED);
-  text(w, fmt(d.spentMTD), 17, new Color("#FF6B6B"), true);
+  // Không hiện số dư (riêng tư) — chỉ số đã chi tháng này.
+  text(w, "💰 Spent this month", 12, MUTED);
+  w.addSpacer(2);
+  text(w, fmt(d.spentMTD), 26, Color.white(), true);
   w.addSpacer();
   const add = w.addStack();
   add.url = APP + "?add=1";
