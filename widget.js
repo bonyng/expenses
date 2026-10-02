@@ -18,8 +18,8 @@ async function getKey() {
   return k || null;
 }
 
-async function call(fn, key) {
-  const q = encodeURIComponent(JSON.stringify({ fn, args: [], key }));
+async function call(fn, key, args) {
+  const q = encodeURIComponent(JSON.stringify({ fn, args: args || [], key }));
   const r = new Request(API + "?q=" + q + "&_=" + Date.now());
   return await r.loadJSON();
 }
@@ -39,6 +39,48 @@ function text(st, s, size, color, bold) {
 // Ảnh nền riêng: chọn từ thư viện ảnh khi chạy script trong Scriptable, lưu trong máy.
 const FM = FileManager.local();
 const BG_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_bg.jpg");
+const CATS_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_cats.json");
+
+// Bấm widget → mở thẳng màn nhập chi (như Money Lover): số tiền → nhóm → lưu.
+async function quickAdd(key) {
+  let cats = [];
+  try { cats = JSON.parse(FM.readString(CATS_PATH)); } catch (e) {}
+  if (!cats.length) { try { const d = await call("widgetSummary", key); cats = (d && d.cats) || []; if (cats.length) FM.writeString(CATS_PATH, JSON.stringify(cats)); } catch (e) {} }
+  while (true) {
+    const a = new Alert();
+    a.title = "Add expense";
+    const amt = a.addTextField("Amount (thousand VND)");
+    amt.setDecimalPadKeyboard();
+    a.addTextField("Note");
+    a.addAction("Next");
+    a.addCancelAction("Cancel");
+    if ((await a.present()) < 0) return;
+    const amount = Number(a.textFieldValue(0).replace(/,/g, "").trim());
+    const note = a.textFieldValue(1).trim();
+    if (!(amount > 0)) continue;
+    let category = cats.length ? null : "Ăn uống";
+    if (cats.length) {
+      const c = new Alert();
+      c.title = fmt(amount) + (note ? " · " + note : "");
+      cats.forEach(x => c.addAction((x.icon ? x.icon + "  " : "") + x.label));
+      c.addCancelAction("Cancel");
+      const i = await c.presentSheet();
+      if (i < 0) return;
+      category = cats[i].name;
+    }
+    const d = new Date(), pad = n => ("0" + n).slice(-2);
+    const date = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    let res = null;
+    try { res = await call("saveTransaction", key, [{ date, type: "expense", category, amount, note, wallet: "Cash" }]); } catch (e) {}
+    const r = new Alert();
+    const label = (cats.find(x => x.name === category) || {}).label || category;
+    r.title = res && res.__ok ? "✓ Saved" : "Not saved";
+    r.message = res && res.__ok ? fmt(amount) + " · " + label : String((res && res.error) || "Network error");
+    r.addAction("Done");
+    r.addAction("Add another");
+    if ((await r.present()) !== 1) return;
+  }
+}
 
 function applyBackground(w) {
   w.backgroundColor = BG;
@@ -68,11 +110,12 @@ async function menu() {
 async function build() {
   const w = new ListWidget();
   applyBackground(w);
-  w.url = APP;
+  w.url = URLScheme.forRunningScript() + "?action=add";
   w.setPadding(14, 14, 14, 14);
   const key = await getKey();
   let d = null;
   try { if (key) d = await call("widgetSummary", key); } catch (e) {}
+  if (d && d.__ok && d.cats && d.cats.length) FM.writeString(CATS_PATH, JSON.stringify(d.cats));
   if (!d || !d.__ok) {
     if (d && d.error === "Unauthorized" && Keychain.contains(KC)) Keychain.remove(KC);
     text(w, "💰 Expenses", 13, GREEN, true);
@@ -86,7 +129,6 @@ async function build() {
   text(w, fmt(d.spentToday), 26, Color.white(), true);
   w.addSpacer();
   const add = w.addStack();
-  add.url = APP + "?add=1";
   add.backgroundColor = GREEN;
   add.cornerRadius = 10;
   add.setPadding(5, 0, 5, 0);
@@ -97,8 +139,13 @@ async function build() {
   return w;
 }
 
-if (!config.runsInWidget && Keychain.contains(KC)) await menu();
-const widget = await build();
-if (config.runsInWidget) Script.setWidget(widget);
-else await widget.presentSmall();
+const isAdd = args.queryParameters && args.queryParameters.action === "add";
+if (isAdd && Keychain.contains(KC)) {
+  await quickAdd(Keychain.get(KC));
+} else {
+  if (!config.runsInWidget && Keychain.contains(KC)) await menu();
+  const widget = await build();
+  if (config.runsInWidget) Script.setWidget(widget);
+  else await widget.presentSmall();
+}
 Script.complete();
