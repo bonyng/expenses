@@ -320,6 +320,21 @@ function rpc(fn, payload) {
     google.script.run.withSuccessHandler(res => res && res.__ok ? resolve(res) : reject(res && res.error || 'Unknown error')).withFailureHandler(err => reject(String(err && err.message || err)))[fn](payload);
   });
 }
+const BOOT_CACHE = 'exp_boot';
+function readBootCache() {
+  try {
+    const b = JSON.parse(localStorage.getItem(BOOT_CACHE) || 'null');
+    if (!b || !b.tx) return null;
+    const d = new Date(),
+      today = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    return {
+      ...b,
+      today
+    }; // dữ liệu cũ nhưng ngày phải là hôm nay
+  } catch (e) {
+    return null;
+  }
+}
 function readUrlParams() {
   return new Promise(resolve => {
     try {
@@ -2711,6 +2726,7 @@ function App() {
   const ymState = useState(() => boot ? ymOf(boot.today) : null);
   const [ym, setYm] = ymState;
   const versionRef = useRef(null);
+  const pendingRef = useRef({}); // tmp id → giao dịch chưa lưu xong
   const toastTimer = useRef(null);
   const say = msg => {
     setToast(msg);
@@ -2720,10 +2736,22 @@ function App() {
   const fail = e => {
     say('⚠️ ' + String(e));
   };
+  // Lưu bản dữ liệu gần nhất trong máy → mở app hiện ngay, tải bản mới ở nền (getBootstrap mất 5–10 giây).
   const load = useCallback(() => rpc('getBootstrap').then(b => {
     versionRef.current = b.version;
-    setBoot(b);
     setError('');
+    try {
+      localStorage.setItem(BOOT_CACHE, JSON.stringify(b));
+    } catch (e) {/* đầy bộ nhớ: bỏ qua */}
+    // Giữ các giao dịch đang gửi dở để bản tải về sớm hơn không làm chúng biến mất.
+    const pend = Object.values(pendingRef.current);
+    setBoot(pend.length ? {
+      ...b,
+      tx: {
+        cols: b.tx.cols,
+        rows: b.tx.rows.concat(pend.map(o => b.tx.cols.map(c => o[c] == null ? '' : o[c])))
+      }
+    } : b);
     return b;
   }).catch(e => {
     setError(String(e));
@@ -2733,9 +2761,17 @@ function App() {
     if (msg) say(msg);
   });
   useEffect(() => {
+    const cached = readBootCache();
+    if (cached) {
+      versionRef.current = cached.version;
+      setBoot(cached);
+      setYm(ymOf(cached.today));
+    }
     load().then(b => {
-      setYm(ymOf(b.today));
-    }).catch(() => {});
+      if (!cached || ymOf(cached.today) !== ymOf(b.today)) setYm(ymOf(b.today));
+    }).catch(() => {
+      if (cached) setError('');
+    });
     readUrlParams().then(p => {
       if (p.add === '1') setSheet({
         kind: 'tx',
@@ -2783,6 +2819,33 @@ function App() {
       }
     };
   });
+  const saveTxNow = t => rpc('saveTransaction', t).then(res => {
+    patchLocal(list => {
+      const rec = {
+        ...t,
+        id: res.id,
+        source: t.id ? undefined : 'manual',
+        status: 'posted',
+        created_at: t.id ? undefined : new Date().toISOString()
+      };
+      const i = list.findIndex(x => x.id === res.id);
+      if (i >= 0) {
+        list[i] = {
+          ...list[i],
+          ...Object.fromEntries(Object.entries(rec).filter(([, v]) => v !== undefined))
+        };
+        return list;
+      }
+      return list.concat([{
+        wallet: 'Cash',
+        note: '',
+        recurring_id: '',
+        ...rec
+      }]);
+    });
+    say(t.id ? 'Updated' : 'Saved ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : ''));
+    load().catch(() => {});
+  });
   const ctx = {
     ymState,
     go: setTab,
@@ -2806,33 +2869,38 @@ function App() {
       ym,
       focus
     }),
-    saveTx: t => rpc('saveTransaction', t).then(res => {
-      patchLocal(list => {
-        const rec = {
-          ...t,
-          id: res.id,
-          source: t.id ? undefined : 'manual',
-          status: 'posted',
-          created_at: t.id ? undefined : new Date().toISOString()
-        };
-        const i = list.findIndex(x => x.id === res.id);
-        if (i >= 0) {
-          list[i] = {
-            ...list[i],
-            ...Object.fromEntries(Object.entries(rec).filter(([, v]) => v !== undefined))
-          };
-          return list;
-        }
-        return list.concat([{
-          wallet: 'Cash',
-          note: '',
-          recurring_id: '',
-          ...rec
-        }]);
+    // Thêm mới: đóng màn hình và hiện giao dịch ngay, gửi lên server ở nền; lỗi thì gỡ ra và báo.
+    saveTx: t => {
+      if (t.id) return saveTxNow(t);
+      const tmp = 'tmp_' + Date.now();
+      const row = {
+        wallet: 'Cash',
+        note: '',
+        recurring_id: '',
+        ...t,
+        id: tmp,
+        source: 'manual',
+        status: 'posted',
+        created_at: new Date().toISOString()
+      };
+      pendingRef.current[tmp] = row;
+      patchLocal(list => list.concat([row]));
+      say('Saving ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : '') + '…');
+      rpc('saveTransaction', t).then(res => {
+        delete pendingRef.current[tmp];
+        patchLocal(list => list.map(x => x.id === tmp ? {
+          ...x,
+          id: res.id
+        } : x));
+        say('Saved ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : ''));
+        load().catch(() => {});
+      }).catch(e => {
+        delete pendingRef.current[tmp];
+        patchLocal(list => list.filter(x => x.id !== tmp));
+        say('⚠️ Not saved: ' + String(e));
       });
-      say(t.id ? 'Updated' : 'Saved ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : ''));
-      load().catch(() => {});
-    }),
+      return Promise.resolve();
+    },
     deleteTx: id => rpc('deleteTransaction', id).then(() => {
       patchLocal(list => list.filter(x => x.id !== id));
       say('Deleted');
