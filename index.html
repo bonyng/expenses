@@ -659,6 +659,41 @@ function avgSpend(M, n = 3) {
   return out;
 }
 
+/** Status 1 dòng budget → {cls, text}. */
+function paceStatus(r, prog) {
+  if (!r.target) return r.spent ? {
+    cls: 'n',
+    text: 'No budget'
+  } : {
+    cls: 'n',
+    text: '—'
+  };
+  if (r.spent > r.target) return {
+    cls: 'r',
+    text: 'Over month +' + fmt(r.spent - r.target)
+  };
+  if (r.fixed) return {
+    cls: 'n',
+    text: 'Fixed bill · ' + fmtPct(r.spent / r.target)
+  };
+  if (!prog.isCurrent) return {
+    cls: 'g',
+    text: 'Under ' + fmt(r.target - r.spent)
+  };
+  if (r.diffToDate > 0) return {
+    cls: 'r',
+    text: 'Over to date +' + fmt(r.diffToDate)
+  };
+  if (r.forecast > r.target) return {
+    cls: 'a',
+    text: 'Forecast over +' + fmt(r.forecast - r.target)
+  };
+  return {
+    cls: 'g',
+    text: 'Under −' + fmt(-r.diffToDate)
+  };
+}
+
 /** Thu/chi/tiết kiệm của tháng + dự báo. */
 function monthSummary(M, ym) {
   const list = reportable(M, monthTx(M, ym));
