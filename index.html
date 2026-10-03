@@ -1292,191 +1292,8 @@ function useChart(ref, config, key) {
 }
 
 // ===================================================================
-// PAGES — Overview · Transactions · Budgets (+ drill-down) · Report
+// PAGES — Transactions · Budgets (+ drill-down)
 // ===================================================================
-
-// ---------- Overview ----------
-function OverviewPage({
-  M,
-  ctx
-}) {
-  const ym = ymOf(M.today);
-  const sv = useMemo(() => savingsView(M, ym), [M]);
-  const bt = useMemo(() => budgetTable(M, ym), [M]);
-  const balance = balanceAt(M);
-  const pend = M.pending.filter(t => t.date.startsWith(ym));
-  const fcOk = sv.fcPct != null && sv.fcPct >= sv.target;
-  const risky = bt.rows.filter(r => r.target > 0 && (r.spent > r.target || !r.fixed && r.diffToDate > 0)).sort((a, b) => b.spent - (b.fixed ? b.target : b.toDate) - (a.spent - (a.fixed ? a.target : a.toDate))).slice(0, 4);
-  const recent = M.posted.slice().sort((a, b) => b.date < a.date ? -1 : b.date > a.date ? 1 : (b.created_at || '') < (a.created_at || '') ? -1 : 1).slice(0, 5);
-  const wb = walletBalances(M).filter(w => w.active !== false);
-  const [hide, setHide] = useState(() => {
-    try {
-      return localStorage.getItem('exp_hide') === '1';
-    } catch (e) {
-      return false;
-    }
-  });
-  const toggleHide = () => {
-    const v = !hide;
-    setHide(v);
-    try {
-      localStorage.setItem('exp_hide', v ? '1' : '0');
-    } catch (e) {/* ignore */}
-  };
-  const money = v => hide ? '•••••' : fmt(v);
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "hdr"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "between"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "row",
-    style: {
-      gap: 6
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "big num"
-  }, money(balance)), /*#__PURE__*/React.createElement("button", {
-    className: "eye",
-    onClick: toggleHide,
-    "aria-label": "Show or hide balance"
-  }, hide ? '🙈' : '👁')), /*#__PURE__*/React.createElement("div", {
-    className: "muted small"
-  }, "Total balance")), /*#__PURE__*/React.createElement("span", {
-    className: "unit"
-  }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
-    className: "card tight"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "between card-head"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "t1"
-  }, "My wallets"), /*#__PURE__*/React.createElement("button", {
-    className: "link",
-    onClick: () => ctx.openWallets()
-  }, "See all ›")), wb.map(w => /*#__PURE__*/React.createElement("div", {
-    className: "item tap",
-    key: w.name,
-    onClick: () => ctx.openWallet(w.name)
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "ic sm"
-  }, w.icon), /*#__PURE__*/React.createElement("div", {
-    className: "grow"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "t1 ellipsis"
-  }, w.name), (w.kind === 'savings' || w.exclude_total) && /*#__PURE__*/React.createElement("div", {
-    className: "t2"
-  }, [w.kind === 'savings' && 'Savings', w.exclude_total && 'not in total'].filter(Boolean).join(' · '))), /*#__PURE__*/React.createElement("div", {
-    className: "amt num"
-  }, money(w.balance))))), /*#__PURE__*/React.createElement("div", {
-    className: "btns",
-    style: {
-      marginTop: 0,
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => ctx.openReport(ym)
-  }, "📊 Monthly report"), /*#__PURE__*/React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => ctx.openReport(ym.slice(0, 4))
-  }, "📅 Yearly report")), /*#__PURE__*/React.createElement("div", {
-    className: "card"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "row"
-  }, /*#__PURE__*/React.createElement(Ring, {
-    value: sv.fcPct != null ? sv.fcPct / Math.max(sv.target, .01) : 0,
-    color: fcOk ? 'var(--green)' : 'var(--amber)'
-  }), /*#__PURE__*/React.createElement("div", {
-    className: "grow"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "muted small",
-    style: {
-      letterSpacing: .6,
-      fontWeight: 600
-    }
-  }, "SAVINGS · ", ymLabel(ym).toUpperCase()), /*#__PURE__*/React.createElement("div", {
-    className: "row",
-    style: {
-      alignItems: 'baseline',
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "big num"
-  }, fmtPct(sv.fcPct)), /*#__PURE__*/React.createElement("span", {
-    className: "muted small"
-  }, "forecast · target ", fmtPct(sv.target))))), /*#__PURE__*/React.createElement("div", {
-    className: "kgrid"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Income MTD"), /*#__PURE__*/React.createElement("div", {
-    className: "v num blue"
-  }, fmt(sv.income))), /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Spent MTD"), /*#__PURE__*/React.createElement("div", {
-    className: "v num"
-  }, fmt(sv.expense))))), pend.length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "card",
-    onClick: () => ctx.go('tx'),
-    style: {
-      cursor: 'pointer'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "between"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "t1"
-  }, "🔁 ", pend.length, " recurring bill", pend.length > 1 ? 's' : '', " to confirm"), /*#__PURE__*/React.createElement("div", {
-    className: "t2"
-  }, fmt(sumBy(pend, t => t.amount)), " · ", pend.map(t => M.disp(t.category)).join(', '))), /*#__PURE__*/React.createElement("span", {
-    className: "chev"
-  }, "›"))), /*#__PURE__*/React.createElement("div", {
-    className: "sec-title"
-  }, "Watch list ", /*#__PURE__*/React.createElement("button", {
-    className: "link",
-    onClick: () => ctx.go('budget')
-  }, "All budgets ›")), /*#__PURE__*/React.createElement("div", {
-    className: "card tight"
-  }, risky.length ? risky.map(r => {
-    const st = paceStatus(r, bt.prog);
-    return /*#__PURE__*/React.createElement("div", {
-      className: "bud",
-      key: r.name,
-      onClick: () => ctx.openBudget(r.name, ym)
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "between"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "row"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "ic sm"
-    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
-      className: "t1"
-    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
-      className: 'pill ' + st.cls
-    }, st.text)), /*#__PURE__*/React.createElement(BudgetBar, {
-      r: r,
-      prog: bt.prog
-    }), /*#__PURE__*/React.createElement(BudgetLegend, {
-      r: r,
-      prog: bt.prog
-    }));
-  }) : /*#__PURE__*/React.createElement("div", {
-    className: "empty"
-  }, "All categories on track 👍")), /*#__PURE__*/React.createElement("div", {
-    className: "sec-title"
-  }, "Recent ", /*#__PURE__*/React.createElement("button", {
-    className: "link",
-    onClick: () => ctx.go('tx')
-  }, "See all ›")), /*#__PURE__*/React.createElement("div", {
-    className: "card tight"
-  }, recent.map(t => /*#__PURE__*/React.createElement(TxItem, {
-    key: t.id,
-    M: M,
-    t: t,
-    onClick: () => ctx.editTx(t)
-  }))));
-}
 
 // ---------- Transactions ----------
 function PendingCard({
@@ -2118,6 +1935,24 @@ function Donut({
     className: "t1 num"
   }, fmt(total))));
 }
+
+/** Tab Report: tiêu đề trang thường; mở từ chỗ khác (có onBack): trang phủ có nút quay lại. */
+function ReportFrame({
+  onBack,
+  children
+}) {
+  if (onBack) return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Report",
+    onBack: onBack
+  }, children);
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hdr"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("h1", null, "Report"), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL))), children);
+}
 function ReportPage({
   M,
   ctx,
@@ -2275,8 +2110,7 @@ function ReportPage({
   const rateOk = R.savedPct != null && R.savedPct >= R.target;
   const budLeft = R.budget - R.budgetSpent;
   const maxIE = Math.max(R.income, R.expense) || 1;
-  return /*#__PURE__*/React.createElement(FullPage, {
-    title: "Report",
+  return /*#__PURE__*/React.createElement(ReportFrame, {
     onBack: onBack
   }, /*#__PURE__*/React.createElement("div", {
     className: "seg",
@@ -3748,6 +3582,20 @@ function AccountPage({
   const [sub, setSub] = useState('');
   const [target, setTarget] = useState(Math.round((Number(M.settings.savings_target) || .45) * 100));
   const [qa, setQa] = useState(String(M.settings.quick_amounts || ''));
+  const [hide, setHide] = useState(() => {
+    try {
+      return localStorage.getItem('exp_hide') === '1';
+    } catch (e) {
+      return false;
+    }
+  });
+  const toggleHide = () => {
+    const v = !hide;
+    setHide(v);
+    try {
+      localStorage.setItem('exp_hide', v ? '1' : '0');
+    } catch (e) {/* ignore */}
+  };
   const saveSetting = (k, v) => rpc('saveSetting', {
     key: k,
     value: v
@@ -3790,13 +3638,52 @@ function AccountPage({
     ctx: ctx,
     onBack: () => setSub('')
   });
+  const wb = walletBalances(M).filter(w => w.active !== false);
+  const money = v => hide ? '•••••' : fmt(v);
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "hdr"
   }, /*#__PURE__*/React.createElement("h1", null, "Account"), /*#__PURE__*/React.createElement("div", {
     className: "sub"
-  }, /*#__PURE__*/React.createElement("span", null, "Personal · ", M.wallets.filter(w => w.active !== false).length, " wallet(s)"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, "Personal · ", wb.length, " wallet(s)"), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Total balance"), /*#__PURE__*/React.createElement("div", {
+    className: "big num"
+  }, money(balanceAt(M)))), /*#__PURE__*/React.createElement("button", {
+    className: "eye",
+    onClick: toggleHide,
+    "aria-label": "Show or hide balances"
+  }, hide ? '🙈' : '👁'))), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between card-head"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1"
+  }, "My wallets"), /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.openWallets()
+  }, "Manage ›")), wb.map(w => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: w.name,
+    onClick: () => ctx.openWallet(w.name)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, w.icon), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, w.name), (w.kind === 'savings' || w.exclude_total) && /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, [w.kind === 'savings' && 'Savings', w.exclude_total && 'not in total'].filter(Boolean).join(' · '))), /*#__PURE__*/React.createElement("div", {
+    className: "amt num"
+  }, money(w.balance)), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
   }, "Goals"), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
@@ -3827,17 +3714,6 @@ function AccountPage({
   }, "Manage"), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "item tap",
-    onClick: () => ctx.openWallets()
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "ic sm"
-  }, "👛"), /*#__PURE__*/React.createElement("span", {
-    className: "grow"
-  }, "My wallets"), /*#__PURE__*/React.createElement("span", {
-    className: "muted"
-  }, M.wallets.filter(w => w.active !== false).length), /*#__PURE__*/React.createElement("span", {
-    className: "chev"
-  }, "›")), /*#__PURE__*/React.createElement("div", {
     className: "item tap",
     onClick: () => setSub('recurring')
   }, /*#__PURE__*/React.createElement("div", {
@@ -4278,13 +4154,13 @@ function CategoryEdit({
 // APP — state, RPC actions (cập nhật lạc quan rồi tải lại nền), nav
 // ===================================================================
 const TABS = [{
-  id: 'home',
-  label: 'Overview',
-  icon: '🏠'
-}, {
   id: 'tx',
   label: 'Transactions',
   icon: '🧾'
+}, {
+  id: 'report',
+  label: 'Report',
+  icon: '📊'
 }, {
   id: 'add'
 }, {
@@ -4300,13 +4176,7 @@ function App() {
   const [boot, setBoot] = useState(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
-  const [tab, setTab] = useState(() => {
-    try {
-      return localStorage.getItem('exp_tab') || 'home';
-    } catch (e) {
-      return 'home';
-    }
-  });
+  const [tab, setTab] = useState('tx'); // mở app luôn vào Transactions (ví Cash)
   const [sheet, setSheet] = useState(null); // {kind:'tx', tx} | {kind:'budgets', ym, focus}
   const [stack, setStack] = useState([]); // trang phủ: {kind:'budget'|'report'|'wallets'|'wallet', ...}; Back = bỏ trang trên cùng
   const overlay = stack[stack.length - 1] || null;
@@ -4383,11 +4253,6 @@ function App() {
       document.removeEventListener('visibilitychange', onVis);
     };
   }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem('exp_tab', tab);
-    } catch (e) {/* ignore */}
-  }, [tab]);
 
   // Ghi đè cục bộ ngay để UI phản hồi tức thì, sau đó tải lại từ server.
   const patchLocal = fn => setBoot(b => {
@@ -4622,16 +4487,18 @@ function App() {
       className: "spinner"
     }), " Loading…"));
   }
-  const page = tab === 'tx' ? /*#__PURE__*/React.createElement(TransactionsPage, {
+  const page = tab === 'report' ? /*#__PURE__*/React.createElement(ReportPage, {
+    key: "report",
     M: M,
-    ctx: ctx
+    ctx: ctx,
+    ym: ymOf(M.today)
   }) : tab === 'budget' ? /*#__PURE__*/React.createElement(BudgetsPage, {
     M: M,
     ctx: ctx
   }) : tab === 'account' ? /*#__PURE__*/React.createElement(AccountPage, {
     M: M,
     ctx: ctx
-  }) : /*#__PURE__*/React.createElement(OverviewPage, {
+  }) : /*#__PURE__*/React.createElement(TransactionsPage, {
     M: M,
     ctx: ctx
   });
