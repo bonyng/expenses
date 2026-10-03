@@ -425,7 +425,7 @@ function buildModel(boot) {
   });
   const excluded = name => !!(catBy[name] && catBy[name].exclude);
   const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
-  const irregular = name => !!(catBy[name] && catBy[name].irregular); // quỹ năm: không phát sinh đều hàng tháng
+  const irregular = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].irregular); // quỹ năm: cờ đặt ở nhóm cha
   const disp = name => catBy[name] && catBy[name].display || name;
   const icon = name => catBy[name] && catBy[name].icon || '•';
   tx.forEach(t => {
@@ -3358,10 +3358,9 @@ function AddTxSheet({
 }
 
 /**
- * Sửa ngân sách. Mỗi nhóm cha chọn 1 trong 2 cách:
- *   Total — 1 con số cho cả nhóm (lưu ở chính nhóm cha; nhóm con không có budget riêng)
- *   Split — chia theo nhóm con (dòng "Other" = phần chi ghi thẳng vào nhóm cha)
+ * Sửa ngân sách: 1 con số cho cả nhóm cha (gồm mọi nhóm con), lưu ở chính nhóm cha.
  * Phạm vi: Every month (dòng default) hoặc chỉ tháng ym (dòng MM/YYYY, bỏ trống = theo mặc định).
+ * Dòng budget cũ đặt ở nhóm con (nếu còn) được cộng vào nhóm cha và xoá khi lưu.
  */
 function EditBudgetsSheet({
   M,
@@ -3371,72 +3370,44 @@ function EditBudgetsSheet({
   onClose
 }) {
   const [scope, setScope] = useState('default');
-  const [draft, setDraft] = useState({}); // 'default|cat' | 'month|cat' → chuỗi số
+  const [draft, setDraft] = useState({}); // 'default|parent' | 'month|parent' → chuỗi số
   const [busy, setBusy] = useState(false);
   const key = budgetMonthKey(ym);
+  const parents = M.cats.filter(c => c.type === 'expense' && !c.parent && !c.exclude && c.active !== false).sort((a, b) => a.sort - b.sort);
+  const kidsOf = p => M.childrenOf[p] || [p];
   const stored = useMemo(() => {
     const o = {
-      default: {},
-      month: {}
-    };
+        default: {},
+        month: {}
+      },
+      leafs = {
+        default: {},
+        month: {}
+      };
     M.boot.budgets.forEach(b => {
-      if (b.month === 'default') o.default[b.category] = b.amount;else if (b.month === key) o.month[b.category] = b.amount;
+      const sc = b.month === 'default' ? 'default' : b.month === key ? 'month' : null;
+      if (!sc) return;
+      const p = M.parentOf(b.category);
+      o[sc][p] = (o[sc][p] || 0) + b.amount;
+      if (b.category !== p) (leafs[sc][p] = leafs[sc][p] || []).push(b.category);
     });
-    return o;
+    return {
+      ...o,
+      leafs
+    };
   }, [M, key]);
   const avg = useMemo(() => avgSpend(M, 3), [M]);
-  const parents = M.cats.filter(c => c.type === 'expense' && !c.parent && !c.exclude && c.active !== false).sort((a, b) => a.sort - b.sort);
-  const kidsOf = p => (M.childrenOf[p] || [p]).filter(c => c === p || M.catBy[c] && M.catBy[c].active !== false);
-  const [mode, setMode] = useState(() => {
-    const o = {};
-    parents.forEach(p => {
-      o[p.name] = kidsOf(p.name).some(c => c !== p.name && (stored.default[c] || stored.month[c])) ? 'split' : 'total';
-    });
-    return o;
-  });
-  const raw = (sc, c) => draft[sc + '|' + c] != null ? draft[sc + '|' + c] : stored[sc][c] != null ? String(stored[sc][c]) : '';
-  const num = (sc, c) => parseNum(raw(sc, c)) || 0;
-  const set = (sc, c, v) => setDraft(d => ({
-    ...d,
-    [sc + '|' + c]: v
-  }));
-  // Số áp dụng cho tháng đang xem: tháng có dòng riêng thì lấy dòng đó, không thì lấy mặc định.
-  const eff = c => scope === 'month' && raw('month', c) !== '' ? num('month', c) : num('default', c);
-  const leaves = p => mode[p] === 'total' ? [p] : kidsOf(p);
-  const parentTotal = p => sumBy(leaves(p), eff);
   const avgOf = p => sumBy(kidsOf(p), c => avg[c] || 0);
-  const potPart = p => sumBy(leaves(p).filter(c => M.irregular(c)), eff); // phần vào quỹ năm
-  const regular = sumBy(parents, p => parentTotal(p.name) - potPart(p.name));
-  const pots = sumBy(parents, p => potPart(p.name));
+  const raw = (sc, p) => draft[sc + '|' + p] != null ? draft[sc + '|' + p] : stored[sc][p] != null ? String(stored[sc][p]) : '';
+  const num = (sc, p) => parseNum(raw(sc, p)) || 0;
+  const eff = p => scope === 'month' && raw('month', p) !== '' ? num('month', p) : num('default', p);
+  const isPot = p => !!(M.catBy[p] && M.catBy[p].irregular);
+  const regular = sumBy(parents.filter(p => !isPot(p.name)), p => eff(p.name));
+  const pots = sumBy(parents.filter(p => isPot(p.name)), p => eff(p.name));
   const avgAll = sumBy(parents, p => avgOf(p.name));
-  const switchMode = (p, m) => {
-    if (mode[p] === m) return;
-    if (m === 'total') {
-      // Gộp các nhóm con vào 1 con số cho cả nhóm; nhóm con về 0 khi lưu.
-      ['default', 'month'].forEach(sc => {
-        const kids = kidsOf(p);
-        if (!kids.some(c => raw(sc, c) !== '')) return;
-        const sum = sumBy(kids, c => num(sc, c));
-        setDraft(d => {
-          const n = {
-            ...d,
-            [sc + '|' + p]: sum ? String(sum) : ''
-          };
-          kids.forEach(c => {
-            if (c !== p && raw(sc, c) !== '') n[sc + '|' + c] = '';
-          });
-          return n;
-        });
-      });
-    }
-    setMode(o => ({
-      ...o,
-      [p]: m
-    }));
-  };
   const changes = Object.keys(draft).filter(k => {
-    const [sc, c] = k.split('|');
-    return (parseNum(draft[k]) || 0) !== (stored[sc][c] || 0);
+    const [sc, p] = k.split('|');
+    return (parseNum(draft[k]) || 0) !== (stored[sc][p] || 0);
   });
   const save = () => {
     if (!changes.length) {
@@ -3444,13 +3415,20 @@ function EditBudgetsSheet({
       return;
     }
     setBusy(true);
-    const items = changes.map(k => {
-      const [sc, c] = k.split('|');
-      return {
-        month: sc === 'default' ? 'default' : key,
-        category: c,
+    const items = [];
+    changes.forEach(k => {
+      const [sc, p] = k.split('|'),
+        month = sc === 'default' ? 'default' : key;
+      items.push({
+        month,
+        category: p,
         amount: parseNum(draft[k]) || 0
-      };
+      });
+      (stored.leafs[sc][p] || []).forEach(c => items.push({
+        month,
+        category: c,
+        amount: 0
+      }));
     });
     rpc('saveBudgets', items).then(() => ctx.reload('Budgets saved')).then(onClose).catch(e => {
       ctx.fail(e);
@@ -3464,29 +3442,6 @@ function EditBudgetsSheet({
       block: 'center'
     });
   }, []);
-  const row = (p, c, label) => {
-    const ph = scope === 'month' && num('default', c) ? fmt(num('default', c)) : '0';
-    const a = mode[p] === 'total' ? avgOf(p) : avg[c] || 0;
-    const hit = c === focus || c === p && mode[p] === 'total' && focusP === p;
-    return /*#__PURE__*/React.createElement("div", {
-      className: 'brow' + (hit ? ' hl' : ''),
-      key: c,
-      ref: hit ? ref : null
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "grow"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "ellipsis"
-    }, label, M.irregular(c) && /*#__PURE__*/React.createElement("span", {
-      className: "pill a potpill"
-    }, "yearly pot")), /*#__PURE__*/React.createElement("div", {
-      className: "t2 num"
-    }, a ? 'Avg 3 mo ' + fmt(a) : 'No spending last 3 mo', scope === 'month' && num('default', c) ? ' · usual ' + fmt(num('default', c)) : '')), /*#__PURE__*/React.createElement(MoneyInput, {
-      className: "binp",
-      placeholder: ph,
-      value: raw(scope, c),
-      onChange: v => set(scope, c, v)
-    }));
-  };
   return /*#__PURE__*/React.createElement(Sheet, {
     title: "Budgets",
     onClose: onClose,
@@ -3533,39 +3488,51 @@ function EditBudgetsSheet({
     style: {
       marginTop: 8
     }
-  }, "Leave a field empty to use the usual (every-month) amount.")), parents.map(pc => {
+  }, "Leave a field empty to use the usual (every-month) amount.")), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, parents.map(pc => {
     const p = pc.name,
-      kids = kidsOf(p),
-      hasKids = kids.length > 1;
-    const tot = parentTotal(p);
+      a = avgOf(p),
+      hit = focusP === p,
+      usual = num('default', p);
+    const kids = kidsOf(p).filter(c => c !== p && M.catBy[c] && M.catBy[c].active !== false);
     return /*#__PURE__*/React.createElement("div", {
-      className: "card tight bcard",
-      key: p
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "bhead"
+      className: 'brow' + (hit ? ' hl' : ''),
+      key: p,
+      ref: hit ? ref : null,
+      style: {
+        padding: '12px 14px'
+      }
     }, /*#__PURE__*/React.createElement("div", {
       className: "ic sm"
     }, pc.icon), /*#__PURE__*/React.createElement("div", {
       className: "grow"
     }, /*#__PURE__*/React.createElement("div", {
       className: "t1 ellipsis"
-    }, pc.display), /*#__PURE__*/React.createElement("div", {
-      className: "t2 num"
-    }, tot ? fmt(tot) + '/mo' : 'No budget', potPart(p) ? (potPart(p) === tot ? ' · yearly pot ' : ' · incl. pot ') + fmt(potPart(p) * 12) + '/yr' : '')), hasKids && /*#__PURE__*/React.createElement("div", {
-      className: "mini-seg"
-    }, /*#__PURE__*/React.createElement("button", {
-      className: mode[p] === 'total' ? 'on' : '',
-      onClick: () => switchMode(p, 'total')
-    }, "Total"), /*#__PURE__*/React.createElement("button", {
-      className: mode[p] === 'split' ? 'on' : '',
-      onClick: () => switchMode(p, 'split')
-    }, "Split"))), mode[p] === 'total' || !hasKids ? row(p, p, hasKids ? 'Whole category' : 'Monthly budget') : kids.filter(c => c !== p).concat([p]).map(c => row(p, c, c === p ? 'Other ' + pc.display : M.disp(c))));
-  }), /*#__PURE__*/React.createElement("div", {
+    }, pc.display, isPot(p) && /*#__PURE__*/React.createElement("span", {
+      className: "pill a potpill"
+    }, "yearly pot")), /*#__PURE__*/React.createElement("div", {
+      className: "t2 num ellipsis"
+    }, a ? 'Avg 3 mo ' + fmt(a) : 'No spending last 3 mo', scope === 'month' && usual ? ' · usual ' + fmt(usual) : '', isPot(p) && eff(p) ? ' · ' + fmt(eff(p) * 12) + '/yr' : ''), kids.length > 0 && /*#__PURE__*/React.createElement("div", {
+      className: "t2 ellipsis",
+      style: {
+        opacity: .75
+      }
+    }, "incl. ", kids.map(c => M.disp(c)).join(', '))), /*#__PURE__*/React.createElement(MoneyInput, {
+      className: "binp",
+      placeholder: scope === 'month' && usual ? fmt(usual) : '0',
+      value: raw(scope, p),
+      onChange: v => setDraft(d => ({
+        ...d,
+        [scope + '|' + p]: v
+      }))
+    }));
+  })), /*#__PURE__*/React.createElement("div", {
     className: "muted small",
     style: {
       margin: '4px 4px 10px'
     }
-  }, UNIT_LABEL, " · Total = one budget for the whole category · Split = a budget per sub-category"), /*#__PURE__*/React.createElement("button", {
+  }, UNIT_LABEL, " · One budget per category, covering all its sub-categories"), /*#__PURE__*/React.createElement("button", {
     className: "btn",
     onClick: save,
     disabled: busy
@@ -4147,7 +4114,7 @@ function CategoryEdit({
   }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.name,
     value: p.name
-  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), f.type === 'expense' && !f.exclude && bool('irregular', 'Irregular — yearly pot (not every month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), f.type === 'expense' && !f.exclude && !f.parent && bool('irregular', 'Irregular — yearly pot (not every month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
 }
 
 // ===================================================================
