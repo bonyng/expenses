@@ -483,11 +483,13 @@ const CAT_TRANSFER_IN = 'Tiền chuyển đến';
 const signed = t => t.type === 'income' ? t.amount : -t.amount;
 const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 const isTransfer = t => !!t.link_id;
-
-/** Số dư trước ngày dateExclusive (không gồm ngày đó). wallet = tên ví; bỏ trống = tổng các ví tính vào tổng. */
+const ALL_WALLETS = '*';
+/** Ví có thuộc bộ lọc không: tên ví · ALL_WALLETS = mọi ví · '' = các ví tính vào tổng. */
+const inWallet = (M, wallet, name) => wallet === ALL_WALLETS ? true : wallet ? name === wallet : M.inTotal.has(name);
+/** Số dư trước ngày dateExclusive (không gồm ngày đó). wallet: xem inWallet. */
 function balanceAt(M, dateExclusive, wallet) {
-  const ok = t => (wallet ? t.wallet === wallet : M.inTotal.has(t.wallet)) && (!dateExclusive || t.date < dateExclusive);
-  const open = wallet ? (M.walletBy[wallet] || {}).opening_balance || 0 : M.opening;
+  const ok = t => inWallet(M, wallet, t.wallet) && (!dateExclusive || t.date < dateExclusive);
+  const open = sumBy(M.wallets.filter(w => inWallet(M, wallet, w.name)), w => w.opening_balance);
   return open + sumBy(M.posted.filter(ok), signed);
 }
 function walletBalances(M) {
@@ -1487,8 +1489,8 @@ function TransactionsPage({
   const [ym, setYm] = ctx.ymState;
   const [q, setQ] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [wallet, setWallet] = ctx.walletState; // '' = mọi ví tính vào tổng
-  const inW = t => wallet ? t.wallet === wallet : M.inTotal.has(t.wallet);
+  const [wallet, setWallet] = ctx.walletState; // tên ví · ALL_WALLETS = cả các ví
+  const inW = t => inWallet(M, wallet, t.wallet);
   const list = useMemo(() => {
     let l = monthTx(M, ym);
     if (q.trim()) {
@@ -1518,15 +1520,15 @@ function TransactionsPage({
     className: "sub"
   }, /*#__PURE__*/React.createElement("label", {
     className: "wsel"
-  }, /*#__PURE__*/React.createElement("span", null, w ? w.icon + ' ' + w.name : '🌐 Total', " ▾"), /*#__PURE__*/React.createElement("select", {
+  }, /*#__PURE__*/React.createElement("span", null, w ? w.icon + ' ' + w.name : '🌐 All wallets', " ▾"), /*#__PURE__*/React.createElement("select", {
     value: wallet,
     onChange: e => setWallet(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "Total (all wallets)"), M.wallets.filter(x => x.active !== false || x.name === wallet).map(x => /*#__PURE__*/React.createElement("option", {
+  }, M.wallets.filter(x => x.active !== false || x.name === wallet).map(x => /*#__PURE__*/React.createElement("option", {
     key: x.name,
     value: x.name
-  }, x.name)))), /*#__PURE__*/React.createElement("span", {
+  }, x.name)), /*#__PURE__*/React.createElement("option", {
+    value: ALL_WALLETS
+  }, "All wallets"))), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), showSearch && /*#__PURE__*/React.createElement("div", {
     className: "search"
@@ -2817,7 +2819,7 @@ function WalletEdit({
     icon: w.icon || (w.kind === 'savings' ? '🐷' : '👛'),
     kind: w.kind || 'basic',
     opening_balance: w.isNew ? '' : String(w.opening_balance || 0),
-    exclude_total: !!w.exclude_total,
+    exclude_total: w.isNew ? w.kind === 'savings' : !!w.exclude_total,
     active: w.active !== false
   });
   const [busy, setBusy] = useState(false);
@@ -2880,14 +2882,16 @@ function WalletEdit({
     onClick: () => setF({
       ...f,
       kind: 'basic',
-      icon: f.icon === '🐷' ? '👛' : f.icon
+      icon: f.icon === '🐷' ? '👛' : f.icon,
+      exclude_total: w.isNew ? false : f.exclude_total
     })
   }, "👛 Basic"), /*#__PURE__*/React.createElement("button", {
     className: 'e' + (f.kind === 'savings' ? ' on' : ''),
     onClick: () => setF({
       ...f,
       kind: 'savings',
-      icon: f.icon === '👛' ? '🐷' : f.icon
+      icon: f.icon === '👛' ? '🐷' : f.icon,
+      exclude_total: w.isNew ? true : f.exclude_total
     })
   }, "🐷 Savings")), /*#__PURE__*/React.createElement("div", {
     className: "field"
@@ -4130,7 +4134,7 @@ function App() {
   const overlay = stack[stack.length - 1] || null;
   const push = o => setStack(s => s.concat([o]));
   const pop = () => setStack(s => s.slice(0, -1));
-  const walletState = useState('');
+  const walletState = useState(DEFAULT_WALLET); // trang Giao dịch luôn mở ở ví Cash
   const M = useMemo(() => boot ? buildModel(boot) : null, [boot]);
   const ymState = useState(() => boot ? ymOf(boot.today) : null);
   const [ym, setYm] = ymState;
