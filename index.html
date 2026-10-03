@@ -2179,25 +2179,15 @@ function ReportPage({
       }
     }
   }, period + (isYear ? 'y' : 'm') + M.boot.version + (drill ? 'd' : ''));
-  if (drill) {
-    const kids = new Set(M.childrenOf[drill] || [drill]);
-    const list = reportable(M, M.posted.filter(t => t.date >= R.first && t.date < R.next)).filter(t => t.type === type && kids.has(t.category));
-    return /*#__PURE__*/React.createElement(FullPage, {
-      title: M.disp(drill),
-      onBack: () => setDrill(null)
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "muted small between",
-      style: {
-        margin: '4px 2px 12px'
-      }
-    }, /*#__PURE__*/React.createElement("span", null, isYear ? 'Year ' + period : ymLabel(period), " · ", list.length, " transactions"), /*#__PURE__*/React.createElement("span", {
-      className: "num"
-    }, fmt(sumBy(list, t => t.amount)))), /*#__PURE__*/React.createElement(DayGroups, {
-      M: M,
-      list: list,
-      onEdit: ctx.editTx
-    }));
-  }
+  if (drill) return /*#__PURE__*/React.createElement(CategoryDrill, {
+    M: M,
+    ctx: ctx,
+    parent: drill,
+    type: type,
+    R: R,
+    label: isYear ? 'Year ' + period : ymLabel(period),
+    onBack: () => setDrill(null)
+  });
   const parts = type === 'expense' ? R.expParts : R.incParts;
   const prevBy = {};
   (type === 'expense' ? P.expParts : P.incParts).forEach(p => {
@@ -2309,7 +2299,7 @@ function ReportPage({
     className: "sec-title"
   }, "Goals"), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, /*#__PURE__*/React.createElement("div", {
+  }, R.income > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "t1"
@@ -2325,7 +2315,7 @@ function ReportPage({
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Saved ", /*#__PURE__*/React.createElement("b", null, fmt(savedAmt))), /*#__PURE__*/React.createElement("span", null, "Goal ", fmt(goalAmt))), /*#__PURE__*/React.createElement("div", {
     className: "divider"
-  }), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "t1"
@@ -2424,6 +2414,105 @@ function ReportPage({
   }, x.income ? fmtPct((x.income - x.expense) / x.income) : '—'))))), /*#__PURE__*/React.createElement("div", {
     className: "foot-note"
   }, UNIT_LABEL, " · transfers, investments, loans and balance adjustments are not counted as income/expense"));
+}
+
+/**
+ * Bấm 1 nhóm trong báo cáo: biểu đồ tròn các nhóm con (% và số tiền) → bấm nhóm con: giao dịch theo ngày.
+ * Nhóm không có nhóm con → vào thẳng danh sách giao dịch.
+ */
+function CategoryDrill({
+  M,
+  ctx,
+  parent,
+  type,
+  R,
+  label,
+  onBack
+}) {
+  const [leaf, setLeaf] = useState(null);
+  const kids = new Set(M.childrenOf[parent] || [parent]);
+  const list = reportable(M, M.posted.filter(t => t.date >= R.first && t.date < R.next)).filter(t => t.type === type && kids.has(t.category));
+  const by = {};
+  list.forEach(t => {
+    by[t.category] = (by[t.category] || 0) + t.amount;
+  });
+  const parts = Object.keys(by).map(k => ({
+    k,
+    v: by[k]
+  })).sort((a, b) => b.v - a.v);
+  const total = sumBy(list, t => t.amount),
+    tot = total || 1;
+  const single = parts.length <= 1;
+  const name = n => n === parent && !single ? M.disp(parent) + ' (general)' : M.disp(n);
+  if (leaf || single) {
+    const l = leaf ? list.filter(t => t.category === leaf) : list;
+    return /*#__PURE__*/React.createElement(FullPage, {
+      title: leaf ? name(leaf) : M.disp(parent),
+      onBack: leaf && !single ? () => setLeaf(null) : onBack
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "muted small between",
+      style: {
+        margin: '4px 2px 12px'
+      }
+    }, /*#__PURE__*/React.createElement("span", null, label, " · ", l.length, " transactions"), /*#__PURE__*/React.createElement("span", {
+      className: "num"
+    }, fmt(sumBy(l, t => t.amount)))), /*#__PURE__*/React.createElement(DayGroups, {
+      M: M,
+      list: l,
+      onEdit: ctx.editTx
+    }));
+  }
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: M.disp(parent),
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "muted small between",
+    style: {
+      margin: '4px 2px 12px'
+    }
+  }, /*#__PURE__*/React.createElement("span", null, label, " · ", list.length, " transactions"), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL)), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement(Donut, {
+    parts: parts,
+    total: total,
+    label: M.disp(parent),
+    id: parent + label + type + M.boot.version
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, parts.map((p, i) => {
+    const col = i < PALETTE.length - 1 ? PALETTE[i] : OTHER_COLOR;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "item tap",
+      key: p.k,
+      onClick: () => setLeaf(p.k)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm",
+      style: {
+        boxShadow: `inset 0 0 0 2px ${col}`
+      }
+    }, M.icon(p.k)), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, name(p.k)), /*#__PURE__*/React.createElement("span", {
+      className: "amt num"
+    }, fmt(p.v))), /*#__PURE__*/React.createElement("div", {
+      className: "hbar"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: p.v / tot * 100 + '%',
+        background: col
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "t2"
+    }, fmtPct(p.v / tot), " · ", list.filter(t => t.category === p.k).length, " transactions")), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›"));
+  })));
 }
 
 // ===================================================================
