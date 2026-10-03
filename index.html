@@ -34,6 +34,7 @@
     var k = prompt('Enter your access key');
     if (k && k.trim()) { try { localStorage.setItem(KEY, k.trim()); } catch (e) {} location.reload(); }
   }
+  var READ_ONLY = ['getBootstrap', 'getVersion', 'widgetSummary'];   // lệnh ghi không gọi lại (tránh lưu trùng)
   function call(fn, args, tries) {
     // GET ?q=: iOS Safari làm rơi thân POST khi đi qua redirect của Apps Script.
     // Google thỉnh thoảng trả trang lỗi HTML (404 ở bước echo) → tự gọi lại tối đa 2 lần.
@@ -43,7 +44,7 @@
       .then(function (r) { return r.text(); })
       .then(function (t) { return JSON.parse(t); })
       .catch(function (e) {
-        if (tries < 2) return new Promise(function (ok) { setTimeout(ok, 800 * (tries + 1)); }).then(function () { return call(fn, args, tries + 1); });
+        if (tries < 2 && READ_ONLY.indexOf(fn) >= 0) return new Promise(function (ok) { setTimeout(ok, 800 * (tries + 1)); }).then(function () { return call(fn, args, tries + 1); });
         throw e;
       });
   }
