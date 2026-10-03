@@ -1,5 +1,6 @@
-// Expenses widget for Scriptable (iOS). Unit: thousand VND.
+// Expenses widget for Scriptable (iOS) — Money Lover style. Unit: thousand VND.
 // First run inside Scriptable asks for the access key and stores it in the Keychain.
+// Sizes: Small = spent this month + budget bar + Add · Medium = + quick-add category buttons · Large = + top spending.
 const API = "https://script.google.com/macros/s/AKfycbxfGJti6JuILSU_NeaFb5ATQPU5L00tY8uenZQFFT7xtukQqA0fZhBnu2mZI5crjE16/exec";
 const APP = "https://bonyng.github.io/expenses/";
 const KC = "expenses_key";
@@ -25,89 +26,142 @@ async function call(fn, key, args) {
 }
 
 const fmt = n => Math.round(n || 0).toLocaleString("en-US");
-const GREEN = new Color("#2DB84C"), BG = new Color("#0E0E0F"), MUTED = new Color("#8E8E93");
-
-function text(st, s, size, color, bold) {
-  const t = st.addText(s);
-  t.font = bold ? Font.boldSystemFont(size) : Font.systemFont(size);
-  t.textColor = color || Color.white();
-  t.lineLimit = 1;
-  t.minimumScaleFactor = 0.6;
-  return t;
-}
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // Ảnh nền riêng: chọn từ thư viện ảnh khi chạy script trong Scriptable, lưu trong máy.
 const FM = FileManager.local();
 const BG_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_bg.jpg");
 const CATS_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_cats.json");
+const HAS_PHOTO = FM.fileExists(BG_PATH);
 
-// Bấm widget → mở thẳng màn nhập chi (như Money Lover): số tiền → nhóm → lưu.
-async function quickAdd(key) {
-  let cats = [];
-  try { cats = JSON.parse(FM.readString(CATS_PATH)); } catch (e) {}
-  if (!cats.length) { try { const d = await call("widgetSummary", key); cats = (d && d.cats) || []; if (cats.length) FM.writeString(CATS_PATH, JSON.stringify(cats)); } catch (e) {} }
-  while (true) {
-    const a = new Alert();
-    a.title = "Add expense";
-    const amt = a.addTextField("Amount (thousand VND)");
-    amt.setDecimalPadKeyboard();
-    a.addTextField("Note");
-    a.addAction("Next");
-    a.addCancelAction("Cancel");
-    if ((await a.present()) < 0) return;
-    const amount = Number(a.textFieldValue(0).replace(/,/g, "").trim());
-    const note = a.textFieldValue(1).trim();
-    if (!(amount > 0)) continue;
-    let category = cats.length ? null : "Ăn uống";
-    if (cats.length) {
-      const c = new Alert();
-      c.title = fmt(amount) + (note ? " · " + note : "");
-      cats.forEach(x => c.addAction((x.icon ? x.icon + "  " : "") + x.label));
-      c.addCancelAction("Cancel");
-      const i = await c.presentSheet();
-      if (i < 0) return;
-      category = cats[i].name;
-    }
-    const d = new Date(), pad = n => ("0" + n).slice(-2);
-    const date = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-    let res = null;
-    try { res = await call("saveTransaction", key, [{ date, type: "expense", category, amount, note, wallet: "Cash" }]); } catch (e) {}
-    const r = new Alert();
-    const label = (cats.find(x => x.name === category) || {}).label || category;
-    r.title = res && res.__ok ? "✓ Saved" : "Not saved";
-    r.message = res && res.__ok ? fmt(amount) + " · " + label : String((res && res.error) || "Network error");
-    r.addAction("Done");
-    r.addAction("Add another");
-    if ((await r.present()) !== 1) return;
+// Bảng màu: nền sáng/tối theo máy (như Money Lover); có ảnh nền thì chữ trắng.
+const GREEN = new Color("#2DB84C"), RED = new Color("#FF5A52"), AMBER = new Color("#F5A623");
+const BG = Color.dynamic(new Color("#FFFFFF"), new Color("#1C1C1E"));
+const TEXT = HAS_PHOTO ? Color.white() : Color.dynamic(new Color("#1C1C1E"), new Color("#FFFFFF"));
+const MUTED = HAS_PHOTO ? new Color("#FFFFFF", 0.75) : new Color("#8E8E93");
+const CHIP = HAS_PHOTO ? new Color("#FFFFFF", 0.22) : Color.dynamic(new Color("#F0F2F5"), new Color("#2C2C2E"));
+
+function text(st, s, size, color, weight) {
+  const t = st.addText(s);
+  t.font = weight === "heavy" ? Font.heavySystemFont(size) : weight ? Font.semiboldSystemFont(size) : Font.systemFont(size);
+  t.textColor = color || TEXT;
+  t.lineLimit = 1;
+  t.minimumScaleFactor = 0.6;
+  return t;
+}
+
+/** Thanh tiến độ vẽ bằng DrawContext: fill = đã chi / ngân sách, vạch = mức nên chi tới hôm nay. */
+function barImage(width, ratio, marker, color) {
+  const h = 8, dc = new DrawContext();
+  dc.size = new Size(width, h + 4);
+  dc.opaque = false;
+  dc.respectScreenScale = true;
+  const track = new Path();
+  track.addRoundedRect(new Rect(0, 2, width, h), h / 2, h / 2);
+  dc.addPath(track);
+  dc.setFillColor(HAS_PHOTO ? new Color("#FFFFFF", 0.3) : new Color("#8E8E93", 0.25));
+  dc.fillPath();
+  const w = Math.max(h, Math.min(1, ratio) * width);
+  if (ratio > 0) {
+    const fill = new Path();
+    fill.addRoundedRect(new Rect(0, 2, w, h), h / 2, h / 2);
+    dc.addPath(fill);
+    dc.setFillColor(color);
+    dc.fillPath();
   }
+  if (marker > 0 && marker < 1) {
+    dc.setFillColor(HAS_PHOTO ? Color.white() : new Color("#8E8E93"));
+    dc.fillRect(new Rect(marker * width - 1, 0, 2, h + 4));
+  }
+  return dc.getImage();
+}
+
+function paceColor(d) {
+  if (!d.budget) return GREEN;
+  if (d.spentMTD > d.budget) return RED;
+  if (d.spentMTD > d.budget * d.day / d.days) return AMBER;
+  return GREEN;
+}
+
+function header(st, d) {
+  const h = st.addStack();
+  h.centerAlignContent();
+  const logo = h.addStack();
+  logo.backgroundColor = GREEN;
+  logo.cornerRadius = 6;
+  logo.size = new Size(20, 20);
+  logo.centerAlignContent();
+  text(logo, "₫", 12, Color.white(), true);
+  h.addSpacer(6);
+  text(h, "Expenses", 13, TEXT, true);
+  h.addSpacer();
+  if (d) text(h, MON[+d.month.slice(5, 7) - 1], 12, MUTED, true);
+}
+
+/** Khối chính: đã chi tháng này + thanh ngân sách + dòng còn lại. */
+function summary(st, d, width) {
+  text(st, "Spent this month", 11, MUTED);
+  st.addSpacer(1);
+  const v = text(st, fmt(d.spentMTD), 24, TEXT, "heavy");
+  v.textColor = d.budget && d.spentMTD > d.budget ? RED : TEXT;
+  st.addSpacer(5);
+  const ratio = d.budget ? d.spentMTD / d.budget : 0;
+  const img = st.addImage(barImage(width, ratio, d.budget ? d.day / d.days : 0, paceColor(d)));
+  img.imageSize = new Size(width, 12);
+  st.addSpacer(4);
+  const left = d.budget - d.spentMTD, daysLeft = d.days - d.day + 1;
+  const line = !d.budget ? "Today " + fmt(d.spentToday)
+    : left >= 0 ? "Left " + fmt(left) + " · " + daysLeft + "d" : "Over " + fmt(-left);
+  text(st, line, 11, d.budget && left < 0 ? RED : MUTED, true);
+}
+
+function addButton(st, label) {
+  const b = st.addStack();
+  b.backgroundColor = GREEN;
+  b.cornerRadius = 12;
+  b.setPadding(6, 0, 6, 0);
+  b.url = URLScheme.forRunningScript() + "?action=add";
+  b.addSpacer();
+  text(b, label, 13, Color.white(), true);
+  b.addSpacer();
+}
+
+/** Nút nhóm hay dùng: chạm → nhập luôn số tiền cho nhóm đó. */
+function catButton(row, c) {
+  const col = row.addStack();
+  col.layoutVertically();
+  col.size = new Size(48, 0);
+  col.url = URLScheme.forRunningScript() + "?action=add&cat=" + encodeURIComponent(c.name);
+  const top = col.addStack();
+  top.addSpacer();
+  const ic = top.addStack();
+  ic.size = new Size(40, 40);
+  ic.cornerRadius = 20;
+  ic.backgroundColor = CHIP;
+  ic.centerAlignContent();
+  text(ic, c.icon || "•", 19);
+  top.addSpacer();
+  col.addSpacer(3);
+  const lb = col.addStack();
+  lb.addSpacer();
+  const t = text(lb, c.label, 10, MUTED);
+  t.minimumScaleFactor = 0.7;
+  lb.addSpacer();
 }
 
 function applyBackground(w) {
   w.backgroundColor = BG;
-  if (!FM.fileExists(BG_PATH)) return;
+  if (!HAS_PHOTO) return;
   w.backgroundImage = FM.readImage(BG_PATH);
   // Lớp tối mờ dần để chữ luôn đọc được trên mọi ảnh.
   const g = new LinearGradient();
-  g.colors = [new Color("#000000", 0.55), new Color("#000000", 0.15), new Color("#000000", 0.55)];
+  g.colors = [new Color("#000000", 0.55), new Color("#000000", 0.25), new Color("#000000", 0.6)];
   g.locations = [0, 0.5, 1];
   w.backgroundGradient = g;
 }
 
-async function menu() {
-  const a = new Alert();
-  a.title = "Expenses widget";
-  a.addAction("Choose photo");
-  if (FM.fileExists(BG_PATH)) a.addAction("Remove photo");
-  a.addCancelAction("Preview");
-  const i = await a.present();
-  if (i === 0) {
-    try { FM.writeImage(BG_PATH, await Photos.fromLibrary()); } catch (e) {}
-  } else if (i === 1) {
-    FM.remove(BG_PATH);
-  }
-}
-
-async function build() {
+async function build(fam) {
+  fam = fam || config.widgetFamily || "medium";
   const w = new ListWidget();
   applyBackground(w);
   w.url = URLScheme.forRunningScript() + "?action=add";
@@ -118,34 +172,147 @@ async function build() {
   if (d && d.__ok && d.cats && d.cats.length) FM.writeString(CATS_PATH, JSON.stringify(d.cats));
   if (!d || !d.__ok) {
     if (d && d.error === "Unauthorized" && Keychain.contains(KC)) Keychain.remove(KC);
-    text(w, "💰 Expenses", 13, GREEN, true);
-    w.addSpacer(6);
+    header(w, null);
+    w.addSpacer(8);
     text(w, key ? "Can't load data" : "Run in Scriptable to set key", 12, MUTED);
+    w.addSpacer();
+    addButton(w, "＋ Add");
     return w;
   }
-  // Không hiện số dư (riêng tư) — chỉ số đã chi hôm nay.
-  text(w, "💰 Spent today", 12, Color.white());
-  w.addSpacer(2);
-  text(w, fmt(d.spentToday), 26, Color.white(), true);
-  w.addSpacer();
-  const add = w.addStack();
-  add.backgroundColor = GREEN;
-  add.cornerRadius = 10;
-  add.setPadding(5, 0, 5, 0);
-  add.addSpacer();
-  text(add, "＋ Add", 13, Color.white(), true);
-  add.addSpacer();
   w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
+  // Không hiện số dư (riêng tư) — chỉ số đã chi.
+  if (fam === "small") {
+    header(w, d);
+    w.addSpacer(8);
+    summary(w, d, 128);
+    w.addSpacer();
+    addButton(w, "＋ Add");
+    return w;
+  }
+  const body = w.addStack();
+  const left = body.addStack();
+  left.layoutVertically();
+  left.size = new Size(134, 0);
+  header(left, d);
+  left.addSpacer(8);
+  summary(left, d, 134);
+  left.addSpacer();
+  addButton(left, "＋ Add");
+  body.addSpacer(14);
+  const right = body.addStack();
+  right.layoutVertically();
+  text(right, "Quick add", 11, MUTED, true);
+  right.addSpacer(6);
+  const cats = (d.cats || []).slice(0, 6);
+  for (let r = 0; r < 2; r++) {
+    const row = right.addStack();
+    cats.slice(r * 3, r * 3 + 3).forEach((c, i) => { if (i) row.addSpacer(); catButton(row, c); });
+    if (r === 0) right.addSpacer(6);
+  }
+  if (fam === "large") {
+    w.addSpacer(14);
+    text(w, "Top spending · " + MON[+d.month.slice(5, 7) - 1], 12, MUTED, true);
+    w.addSpacer(6);
+    (d.top || []).forEach(t => {
+      const row = w.addStack();
+      row.centerAlignContent();
+      const ic = row.addStack();
+      ic.size = new Size(30, 30); ic.cornerRadius = 15; ic.backgroundColor = CHIP; ic.centerAlignContent();
+      text(ic, t.icon, 15);
+      row.addSpacer(10);
+      const col = row.addStack();
+      col.layoutVertically();
+      const r1 = col.addStack();
+      text(r1, t.label, 13, TEXT, true);
+      r1.addSpacer();
+      text(r1, fmt(t.amount), 13, TEXT, true);
+      col.addSpacer(3);
+      const im = col.addImage(barImage(250, d.spentMTD ? t.amount / d.spentMTD : 0, 0, GREEN));
+      im.imageSize = new Size(250, 12);
+      w.addSpacer(8);
+    });
+    w.addSpacer();
+    const inc = w.addStack();
+    text(inc, "Income this month", 12, MUTED);
+    inc.addSpacer();
+    text(inc, fmt(d.incomeMTD), 12, new Color("#3B8BFF"), true);
+  }
   return w;
 }
 
-const isAdd = args.queryParameters && args.queryParameters.action === "add";
-if (isAdd && Keychain.contains(KC)) {
-  await quickAdd(Keychain.get(KC));
+// Bấm widget → nhập nhanh native (như Money Lover): số tiền (+ ghi chú) → nhóm → lưu. Không mở Safari.
+async function quickAdd(key, presetCat) {
+  let cats = [];
+  try { cats = JSON.parse(FM.readString(CATS_PATH)); } catch (e) {}
+  if (!cats.length) { try { const d = await call("widgetSummary", key); cats = (d && d.cats) || []; if (cats.length) FM.writeString(CATS_PATH, JSON.stringify(cats)); } catch (e) {} }
+  let preset = presetCat ? (cats.find(x => x.name === presetCat) || { name: presetCat, label: presetCat, icon: "" }) : null;
+  while (true) {
+    const a = new Alert();
+    a.title = preset ? (preset.icon ? preset.icon + "  " : "") + preset.label : "Add expense";
+    a.message = "Unit: thousand VND";
+    const amt = a.addTextField("Amount");
+    amt.setDecimalPadKeyboard();
+    a.addTextField("Note (optional)");
+    a.addAction(preset ? "Save" : "Next");
+    a.addCancelAction("Cancel");
+    if ((await a.present()) < 0) return;
+    const amount = Number(a.textFieldValue(0).replace(/,/g, "").trim());
+    const note = a.textFieldValue(1).trim();
+    if (!(amount > 0)) continue;
+    let category = preset ? preset.name : cats.length ? null : "Ăn uống";
+    if (!category) {
+      const c = new Alert();
+      c.title = fmt(amount) + (note ? " · " + note : "");
+      c.message = "Choose a category";
+      cats.forEach(x => c.addAction((x.icon ? x.icon + "  " : "") + x.label));
+      c.addCancelAction("Cancel");
+      const i = await c.presentSheet();
+      if (i < 0) return;
+      category = cats[i].name;
+    }
+    const dt = new Date(), pad = n => ("0" + n).slice(-2);
+    const date = dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
+    let res = null;
+    try { res = await call("saveTransaction", key, [{ date, type: "expense", category, amount, note, wallet: "Cash" }]); } catch (e) {}
+    const r = new Alert();
+    const label = (cats.find(x => x.name === category) || {}).label || category;
+    r.title = res && res.__ok ? "✓ Saved" : "Not saved";
+    r.message = res && res.__ok ? fmt(amount) + " · " + label : String((res && res.error) || "Network error");
+    r.addAction("Done");
+    r.addAction("Add another");
+    if ((await r.present()) !== 1) return;
+    preset = null;
+  }
+}
+
+async function menu() {
+  const a = new Alert();
+  a.title = "Expenses widget";
+  a.addAction("Choose background photo");
+  if (HAS_PHOTO) a.addAction("Remove photo");
+  a.addAction("Preview small");
+  a.addAction("Preview medium");
+  a.addAction("Preview large");
+  a.addCancelAction("Close");
+  const i = await a.present();
+  const off = HAS_PHOTO ? 1 : 0;
+  if (i === 0) { try { FM.writeImage(BG_PATH, await Photos.fromLibrary()); } catch (e) {} return "medium"; }
+  if (HAS_PHOTO && i === 1) { FM.remove(BG_PATH); return "medium"; }
+  return ["small", "medium", "large"][i - 1 - off] || null;
+}
+
+const qp = args.queryParameters || {};
+if (qp.action === "add" && Keychain.contains(KC)) {
+  await quickAdd(Keychain.get(KC), qp.cat || "");
+} else if (config.runsInWidget) {
+  Script.setWidget(await build());
 } else {
-  if (!config.runsInWidget && Keychain.contains(KC)) await menu();
-  const widget = await build();
-  if (config.runsInWidget) Script.setWidget(widget);
-  else await widget.presentSmall();
+  const size = Keychain.contains(KC) ? await menu() : "medium";
+  if (size) {
+    const widget = await build(size);
+    if (size === "small") await widget.presentSmall();
+    else if (size === "large") await widget.presentLarge();
+    else await widget.presentMedium();
+  }
 }
 Script.complete();

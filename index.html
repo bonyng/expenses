@@ -247,6 +247,36 @@ input, select, textarea { font: inherit; color: var(--text); }
 .cs-tree::after { content: ''; position: absolute; left: 0; top: 50%; width: 10px; border-top: 1.5px solid var(--card2); }
 .cs-row.child.last .cs-tree { bottom: 50%; }
 
+/* v2 — ví · báo cáo · nhập nhanh */
+.eye { font-size: 18px; opacity: .8; padding: 4px; }
+.card-head { padding: 12px 16px 4px; }
+.link { color: var(--green); font-weight: 600; font-size: 14px; }
+.wsel { position: relative; display: inline-flex; align-items: center; gap: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; color: var(--text); font-weight: 600; }
+.wsel select { position: absolute; inset: 0; opacity: 0; width: 100%; }
+.wbtns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 16px; }
+.wbtns button { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); padding: 6px 0; border-radius: 12px; }
+.wbtns button span { width: 44px; height: 44px; border-radius: 50%; background: var(--green-bg); color: var(--green); display: flex; align-items: center; justify-content: center; font-size: 19px; }
+.wbtns button:active { background: var(--card2); }
+.typeseg.three button { font-size: 14px; }
+.typeseg button.on.t { background: var(--green-bg); color: var(--green); }
+.catchips { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); grid-auto-columns: 74px; gap: 4px; overflow-x: auto; padding: 8px 0 10px; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.catchips::-webkit-scrollbar { display: none; }
+.catchips button { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px; border-radius: 12px; font-size: 11px; min-width: 0; color: var(--muted); }
+.catchips button .ci { width: 38px; height: 38px; border-radius: 50%; background: var(--card2); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.catchips button span.ellipsis { max-width: 100%; }
+.catchips button.on { color: var(--green); }
+.catchips button.on .ci { background: var(--green-bg); box-shadow: inset 0 0 0 2px var(--green); }
+.mlrow .chip { padding: 5px 10px; font-size: 12.5px; }
+.keypad button:disabled { opacity: .5; }
+.ie-row { display: flex; justify-content: space-between; font-size: 14px; }
+.donut { position: relative; height: 200px; }
+.donut-c { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+.donut-c .t1 { font-size: 20px; }
+.mtable { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr .9fr; gap: 6px; padding: 11px 16px; border-top: 1px solid var(--line); font-size: 14px; text-align: right; }
+.mtable span:first-child { text-align: left; font-weight: 600; }
+.mtable.head { border-top: 0; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+.mtable.tap:active { background: var(--card2); }
+
 </style>
 </head>
 <body>
@@ -374,9 +404,46 @@ function buildModel(boot) {
   const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
   const disp = name => catBy[name] && catBy[name].display || name;
   const icon = name => catBy[name] && catBy[name].icon || '•';
+  tx.forEach(t => {
+    t.wallet = t.wallet || DEFAULT_WALLET;
+  });
   const posted = tx.filter(t => t.status !== 'pending');
   const pending = tx.filter(t => t.status === 'pending');
-  const opening = (boot.wallets || []).reduce((s, w) => s + (Number(w.opening_balance) || 0), 0);
+  // Ví: ví có giao dịch nhưng chưa khai báo trong sheet Wallets vẫn hiện (số dư đầu = 0).
+  const wl = (boot.wallets && boot.wallets.length ? boot.wallets : [{
+    name: DEFAULT_WALLET,
+    opening_balance: 0
+  }]).map((w, i) => ({
+    icon: '👛',
+    kind: 'basic',
+    exclude_total: false,
+    active: true,
+    sort: i + 1,
+    ...w,
+    opening_balance: Number(w.opening_balance) || 0
+  }));
+  const seen = new Set(wl.map(w => w.name));
+  tx.forEach(t => {
+    if (!seen.has(t.wallet)) {
+      seen.add(t.wallet);
+      wl.push({
+        name: t.wallet,
+        opening_balance: 0,
+        icon: '👛',
+        kind: 'basic',
+        exclude_total: false,
+        active: true,
+        sort: 99
+      });
+    }
+  });
+  const wallets = wl.sort((a, b) => a.sort - b.sort);
+  const walletBy = {};
+  wallets.forEach(w => {
+    walletBy[w.name] = w;
+  });
+  const inTotal = new Set(wallets.filter(w => !w.exclude_total).map(w => w.name));
+  const opening = sumBy(wallets.filter(w => inTotal.has(w.name)), w => w.opening_balance);
   return {
     boot,
     tx,
@@ -391,15 +458,40 @@ function buildModel(boot) {
     disp,
     icon,
     opening,
+    wallets,
+    walletBy,
+    inTotal,
     today: boot.today,
     settings: boot.settings || {}
   };
 }
+const DEFAULT_WALLET = 'Cash';
+const CAT_ADJUST = 'Điều chỉnh số dư';
+const CAT_TRANSFER_OUT = 'Tiền chuyển đi';
+const CAT_TRANSFER_IN = 'Tiền chuyển đến';
 const signed = t => t.type === 'income' ? t.amount : -t.amount;
 const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
-function balanceAt(M, dateExclusive) {
-  // số dư trước ngày (không gồm ngày đó)
-  return M.opening + sumBy(M.posted.filter(t => !dateExclusive || t.date < dateExclusive), signed);
+const isTransfer = t => !!t.link_id;
+
+/** Số dư trước ngày dateExclusive (không gồm ngày đó). wallet = tên ví; bỏ trống = tổng các ví tính vào tổng. */
+function balanceAt(M, dateExclusive, wallet) {
+  const ok = t => (wallet ? t.wallet === wallet : M.inTotal.has(t.wallet)) && (!dateExclusive || t.date < dateExclusive);
+  const open = wallet ? (M.walletBy[wallet] || {}).opening_balance || 0 : M.opening;
+  return open + sumBy(M.posted.filter(ok), signed);
+}
+function walletBalances(M) {
+  return M.wallets.map(w => ({
+    ...w,
+    balance: balanceAt(M, null, w.name)
+  }));
+}
+/** Cặp chuyển tiền của 1 giao dịch: {out, in}. */
+function transferPair(M, t) {
+  const both = M.posted.filter(x => x.link_id && x.link_id === t.link_id);
+  return {
+    out: both.find(x => x.type === 'expense'),
+    in: both.find(x => x.type === 'income')
+  };
 }
 function monthTx(M, ym) {
   return M.posted.filter(t => t.date.startsWith(ym));
@@ -598,6 +690,90 @@ function savingsView(M, ym) {
     fcPct: expIncome > 0 ? fcSaved / expIncome : null,
     spendLimit: expIncome * (1 - target),
     prog: bt.prog
+  };
+}
+
+/**
+ * Báo cáo theo kỳ (tháng 'yyyy-MM' hoặc năm 'yyyy'): thu/chi/net, cơ cấu theo nhóm cha, số dư đầu/cuối,
+ * ngân sách cộng dồn của kỳ (năm: chỉ cộng các tháng đã qua/đang chạy).
+ */
+function periodReport(M, period) {
+  const isYear = period.length === 4;
+  const months = isYear ? Array.from({
+    length: 12
+  }, (_, i) => period + '-' + pad2(i + 1)) : [period];
+  const first = months[0] + '-01',
+    next = ymAdd(months[months.length - 1], 1) + '-01';
+  const list = reportable(M, M.posted.filter(t => t.date >= first && t.date < next));
+  const by = {
+    expense: {},
+    income: {}
+  };
+  list.forEach(t => {
+    const p = M.parentOf(t.category);
+    by[t.type][p] = (by[t.type][p] || 0) + t.amount;
+  });
+  const parts = type => Object.keys(by[type]).map(k => ({
+    k,
+    v: by[type][k]
+  })).sort((a, b) => b.v - a.v);
+  const income = sumBy(list.filter(t => t.type === 'income'), t => t.amount);
+  const expense = sumBy(list.filter(t => t.type === 'expense'), t => t.amount);
+  const tym = ymOf(M.today);
+  const live = months.filter(m => m <= tym); // tháng đã có số liệu
+  const budgetOf = m => Object.entries(leafBudget(M, m)).filter(([c]) => !M.excluded(c)).reduce((s, [, v]) => s + v, 0);
+  const budget = sumBy(live, budgetOf);
+  const byParentBudget = {};
+  live.forEach(m => Object.entries(leafBudget(M, m)).forEach(([c, v]) => {
+    if (!M.excluded(c)) {
+      const p = M.parentOf(c);
+      byParentBudget[p] = (byParentBudget[p] || 0) + v;
+    }
+  }));
+  const series = months.map(m => ({
+    m,
+    ...monthSummary(M, m)
+  }));
+  return {
+    isYear,
+    months,
+    first,
+    next,
+    income,
+    expense,
+    net: income - expense,
+    budget,
+    byParentBudget,
+    open: balanceAt(M, first),
+    close: balanceAt(M, next > M.today ? null : next),
+    expParts: parts('expense'),
+    incParts: parts('income'),
+    series,
+    nLive: Math.max(1, live.length),
+    savedPct: income > 0 ? (income - expense) / income : null,
+    target: Number(M.settings.savings_target) || 0.45
+  };
+}
+/** Chi theo ngày trong tháng + đường ngân sách cộng dồn. */
+function dailyCumulative(M, ym) {
+  const D = daysIn(ym),
+    prog = monthProgress(M, ym);
+  const daily = Array(D).fill(0);
+  reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense').forEach(t => {
+    daily[+t.date.slice(8, 10) - 1] += t.amount;
+  });
+  const cum = [];
+  daily.reduce((s, v, i) => {
+    cum[i] = i < prog.d || !prog.isCurrent ? s + v : null;
+    return s + v;
+  }, 0);
+  const target = Object.entries(leafBudget(M, ym)).filter(([c]) => !M.excluded(c)).reduce((s, [, v]) => s + v, 0);
+  return {
+    D,
+    daily,
+    cum,
+    target,
+    pace: daily.map((_, i) => target * (i + 1) / D)
   };
 }
 
@@ -870,18 +1046,28 @@ function TxItem({
 }) {
   const isP = t.status === 'pending';
   const parent = M.parentOf(t.category);
+  const multi = M.wallets.length > 1;
+  let title = M.disp(t.category),
+    icon = M.icon(t.category);
+  if (isTransfer(t)) {
+    const pr = transferPair(M, t),
+      other = t.type === 'expense' ? pr.in : pr.out;
+    title = (t.type === 'expense' ? 'Transfer to ' : 'Transfer from ') + (other ? other.wallet : '?');
+    icon = '⇄';
+  }
+  const sub = [t.note || (parent !== t.category ? M.disp(parent) : ''), multi && !isTransfer(t) ? t.wallet : '', isP ? 'pending' : ''].filter(Boolean).join(' · ');
   return /*#__PURE__*/React.createElement("div", {
     className: 'item tap' + (isP ? ' pending' : ''),
     onClick: onClick
   }, /*#__PURE__*/React.createElement("div", {
     className: "ic"
-  }, M.icon(t.category)), /*#__PURE__*/React.createElement("div", {
+  }, icon), /*#__PURE__*/React.createElement("div", {
     className: "grow"
   }, /*#__PURE__*/React.createElement("div", {
     className: "t1 ellipsis"
-  }, M.disp(t.category)), /*#__PURE__*/React.createElement("div", {
+  }, title), /*#__PURE__*/React.createElement("div", {
     className: "t2 ellipsis"
-  }, t.note || (parent !== t.category ? M.disp(parent) : ''), isP ? ' · pending' : '')), /*#__PURE__*/React.createElement("div", {
+  }, sub, isTransfer(t) ? (t.note ? ' · ' : '') + t.wallet : '')), /*#__PURE__*/React.createElement("div", {
     className: 'amt num ' + (t.type === 'income' ? 'blue' : 'red')
   }, t.type === 'income' ? '+' : '−', fmt(t.amount)));
 }
@@ -980,17 +1166,77 @@ function OverviewPage({
   const fcOk = sv.fcPct != null && sv.fcPct >= sv.target;
   const risky = bt.rows.filter(r => r.target > 0 && (r.spent > r.target || !r.fixed && r.diffToDate > 0)).sort((a, b) => b.spent - (b.fixed ? b.target : b.toDate) - (a.spent - (a.fixed ? a.target : a.toDate))).slice(0, 4);
   const recent = M.posted.slice().sort((a, b) => b.date < a.date ? -1 : b.date > a.date ? 1 : (b.created_at || '') < (a.created_at || '') ? -1 : 1).slice(0, 5);
+  const wb = walletBalances(M).filter(w => w.active !== false);
+  const [hide, setHide] = useState(() => {
+    try {
+      return localStorage.getItem('exp_hide') === '1';
+    } catch (e) {
+      return false;
+    }
+  });
+  const toggleHide = () => {
+    const v = !hide;
+    setHide(v);
+    try {
+      localStorage.setItem('exp_hide', v ? '1' : '0');
+    } catch (e) {/* ignore */}
+  };
+  const money = v => hide ? '•••••' : fmt(v);
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "hdr"
   }, /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "muted small"
-  }, "Total balance"), /*#__PURE__*/React.createElement("div", {
+    className: "row",
+    style: {
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
     className: "big num"
-  }, fmt(balance))), /*#__PURE__*/React.createElement("span", {
+  }, money(balance)), /*#__PURE__*/React.createElement("button", {
+    className: "eye",
+    onClick: toggleHide,
+    "aria-label": "Show or hide balance"
+  }, hide ? '🙈' : '👁')), /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Total balance")), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between card-head"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1"
+  }, "My wallets"), /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.openWallets()
+  }, "See all ›")), wb.map(w => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: w.name,
+    onClick: () => ctx.openWallet(w.name)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, w.icon), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, w.name), (w.kind === 'savings' || w.exclude_total) && /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, [w.kind === 'savings' && 'Savings', w.exclude_total && 'not in total'].filter(Boolean).join(' · '))), /*#__PURE__*/React.createElement("div", {
+    className: "amt num"
+  }, money(w.balance))))), /*#__PURE__*/React.createElement("div", {
+    className: "btns",
+    style: {
+      marginTop: 0,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    onClick: () => ctx.openReport(ym)
+  }, "📊 Monthly report"), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    onClick: () => ctx.openReport(ym.slice(0, 4))
+  }, "📅 Yearly report")), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "row"
@@ -1087,10 +1333,7 @@ function OverviewPage({
     M: M,
     t: t,
     onClick: () => ctx.editTx(t)
-  }))), /*#__PURE__*/React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => ctx.openReport(ym)
-  }, "View report ›"));
+  }))));
 }
 
 // ---------- Transactions ----------
@@ -1156,19 +1399,22 @@ function TransactionsPage({
   const [ym, setYm] = ctx.ymState;
   const [q, setQ] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  const [wallet, setWallet] = ctx.walletState; // '' = mọi ví tính vào tổng
+  const inW = t => wallet ? t.wallet === wallet : M.inTotal.has(t.wallet);
   const list = useMemo(() => {
     let l = monthTx(M, ym);
     if (q.trim()) {
       const f = fold(q);
       l = M.posted.filter(t => fold(t.note).includes(f) || fold(t.category).includes(f) || fold(M.disp(t.category)).includes(f));
     }
-    return l;
-  }, [M, ym, q]);
+    return l.filter(inW);
+  }, [M, ym, q, wallet]);
   const first = ym + '-01',
     next = ymAdd(ym, 1) + '-01';
-  const open = balanceAt(M, first),
-    close = balanceAt(M, next);
-  const pend = M.pending.filter(t => t.date.startsWith(ym));
+  const open = balanceAt(M, first, wallet),
+    close = balanceAt(M, next, wallet);
+  const pend = M.pending.filter(t => t.date.startsWith(ym) && inW(t));
+  const w = wallet && M.walletBy[wallet];
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "hdr"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1177,12 +1423,22 @@ function TransactionsPage({
     className: "muted small"
   }, "Balance"), /*#__PURE__*/React.createElement("div", {
     className: "big num"
-  }, fmt(balanceAt(M)))), /*#__PURE__*/React.createElement("button", {
+  }, fmt(balanceAt(M, null, wallet)))), /*#__PURE__*/React.createElement("button", {
     className: "icon-btn",
     onClick: () => setShowSearch(!showSearch)
   }, "🔍")), /*#__PURE__*/React.createElement("div", {
     className: "sub"
-  }, /*#__PURE__*/React.createElement("span", null, "Cash"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "wsel"
+  }, /*#__PURE__*/React.createElement("span", null, w ? w.icon + ' ' + w.name : '🌐 Total', " ▾"), /*#__PURE__*/React.createElement("select", {
+    value: wallet,
+    onChange: e => setWallet(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Total (all wallets)"), M.wallets.filter(x => x.active !== false || x.name === wallet).map(x => /*#__PURE__*/React.createElement("option", {
+    key: x.name,
+    value: x.name
+  }, x.name)))), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), showSearch && /*#__PURE__*/React.createElement("div", {
     className: "search"
@@ -1487,46 +1743,198 @@ function BudgetDetail({
   }));
 }
 
-// ---------- Report ----------
+// ===================================================================
+// REPORT — kiểu Money Lover: Tháng / Năm · số dư đầu-cuối · thu nhập ròng · mục tiêu tiết kiệm
+// · ngân sách · biểu đồ · cơ cấu theo nhóm (donut) · bảng 12 tháng (chế độ năm)
+// ===================================================================
+const PALETTE = ['#2DB84C', '#3B8BFF', '#F5B83D', '#FF5A52', '#A066FF', '#20C5C5', '#FF8A3D'];
+const OTHER_COLOR = '#5A5A60';
+function PeriodSwitch({
+  period,
+  setPeriod,
+  today
+}) {
+  const isYear = period.length === 4,
+    ty = today.slice(0, 4),
+    tm = ymOf(today);
+  const step = k => setPeriod(isYear ? String(+period + k) : ymAdd(period, k));
+  const cur = isYear ? ty : tm;
+  const rel = period === cur ? isYear ? 'THIS YEAR' : 'THIS MONTH' : period === (isYear ? String(+ty - 1) : ymAdd(tm, -1)) ? isYear ? 'LAST YEAR' : 'LAST MONTH' : '';
+  return /*#__PURE__*/React.createElement("div", {
+    className: "mswitch"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => step(-1)
+  }, "‹"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'center'
+    },
+    onClick: () => setPeriod(cur)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "lbl"
+  }, isYear ? 'Year ' + period : ymLabel(period)), /*#__PURE__*/React.createElement("div", {
+    className: "small",
+    style: {
+      color: rel.startsWith('THIS') ? 'var(--green)' : 'var(--muted)',
+      fontWeight: 600,
+      letterSpacing: .5
+    }
+  }, rel || (isYear ? 'TAP FOR THIS YEAR' : 'TAP FOR THIS MONTH'))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => step(1)
+  }, "›"));
+}
+
+/** Thanh so sánh 1 giá trị với mục tiêu: fill = giá trị, vạch = mục tiêu. */
+function GoalBar({
+  value,
+  goal,
+  max,
+  color
+}) {
+  const m = Math.max(max || 0, value || 0, goal || 0) || 1;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "bar",
+    style: {
+      margin: '10px 0 6px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "fill",
+    style: {
+      width: Math.max(0, Math.min(100, (value || 0) / m * 100)) + '%',
+      background: color
+    }
+  }), goal > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "tick",
+    style: {
+      left: `calc(${Math.min(100, goal / m * 100)}% - 1px)`
+    }
+  }));
+}
+const pctDelta = (cur, prev) => prev > 0 && cur >= 0 ? (cur - prev) / prev : null; // chỉ so khi cả 2 kỳ dương (net đổi dấu thì % vô nghĩa)
+function Delta({
+  cur,
+  prev,
+  goodWhenUp
+}) {
+  const d = pctDelta(cur, prev);
+  if (d == null || !isFinite(d)) return null;
+  const up = d > 0,
+    good = goodWhenUp ? up : !up;
+  return /*#__PURE__*/React.createElement("span", {
+    className: 'small ' + (Math.abs(d) < .005 ? 'muted' : good ? 'green' : 'red')
+  }, up ? '▲' : '▼', " ", fmtPct(Math.abs(d)));
+}
+function Donut({
+  parts,
+  total,
+  label,
+  id
+}) {
+  const ref = useRef(null);
+  const top = parts.slice(0, PALETTE.length - 1);
+  const rest = sumBy(parts.slice(PALETTE.length - 1), p => p.v);
+  const data = top.map(p => p.v).concat(rest > 0 ? [rest] : []);
+  const colors = top.map((_, i) => PALETTE[i]).concat(rest > 0 ? [OTHER_COLOR] : []);
+  useChart(ref, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: data.length ? data : [1],
+        backgroundColor: data.length ? colors : ['#2A2A2D'],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          enabled: false
+        }
+      },
+      animation: {
+        duration: 300
+      }
+    }
+  }, id);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "donut"
+  }, /*#__PURE__*/React.createElement("canvas", {
+    ref: ref
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "donut-c"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, label), /*#__PURE__*/React.createElement("div", {
+    className: "t1 num"
+  }, fmt(total))));
+}
 function ReportPage({
   M,
   ctx,
-  ym: ym0,
+  ym: p0,
   onBack
 }) {
-  const [ym, setYm] = useState(ym0);
+  const [period, setPeriod] = useState(p0);
   const [type, setType] = useState('expense');
   const [drill, setDrill] = useState(null);
-  const s = monthSummary(M, ym);
-  const prev = monthSummary(M, ymAdd(ym, -1));
-  const list = reportable(M, monthTx(M, ym)).filter(t => t.type === type);
-  const byParent = {};
-  list.forEach(t => {
-    const p = M.parentOf(t.category);
-    byParent[p] = (byParent[p] || 0) + t.amount;
-  });
-  const parts = Object.keys(byParent).map(k => ({
-    k,
-    v: byParent[k]
-  })).sort((a, b) => b.v - a.v);
-  const tot = sumBy(parts, p => p.v) || 1;
-  const months = Array.from({
-    length: 12
-  }, (_, i) => ymAdd(ym, i - 11));
-  const series = months.map(m => monthSummary(M, m));
-  const ref = useRef(null);
-  useChart(ref, {
+  const isYear = period.length === 4;
+  const R = useMemo(() => periodReport(M, period), [M, period]);
+  const prevP = isYear ? String(+period - 1) : ymAdd(period, -1);
+  const P = useMemo(() => periodReport(M, prevP), [M, prevP]);
+  const tym = ymOf(M.today);
+  const running = isYear ? period === M.today.slice(0, 4) : period === tym;
+  const setMode = y => {
+    if (y === isYear) return;
+    if (y) setPeriod(period.slice(0, 4));else setPeriod(period === tym.slice(0, 4) ? tym : period + '-12');
+  };
+
+  // Biểu đồ: tháng → chi cộng dồn so với ngân sách; năm → thu/chi từng tháng
+  const chartRef = useRef(null);
+  const axis = {
+    ticks: {
+      color: '#8E8E93',
+      font: {
+        size: 10
+      }
+    },
+    grid: {
+      display: false
+    }
+  };
+  const yAxis = {
+    ticks: {
+      color: '#8E8E93',
+      callback: v => fmt(v),
+      font: {
+        size: 10
+      }
+    },
+    grid: {
+      color: '#2A2A2D'
+    }
+  };
+  const tip = {
+    callbacks: {
+      label: c => c.dataset.label + ': ' + fmt(c.raw)
+    }
+  };
+  const dc = !isYear ? dailyCumulative(M, period) : null;
+  useChart(chartRef, isYear ? {
     type: 'bar',
     data: {
-      labels: months.map(ymShort),
+      labels: MON3,
       datasets: [{
         label: 'Income',
-        data: series.map(x => x.income),
+        data: R.series.map(x => x.m <= tym ? x.income : null),
         backgroundColor: '#3B8BFF',
         borderRadius: 4
       }, {
         label: 'Expense',
-        data: series.map(x => x.expense),
+        data: R.series.map(x => x.m <= tym ? x.expense : null),
         backgroundColor: '#FF5A52',
         borderRadius: 4
       }]
@@ -1541,99 +1949,237 @@ function ReportPage({
             boxWidth: 10
           }
         },
-        tooltip: {
-          callbacks: {
-            label: c => c.dataset.label + ': ' + fmt(c.raw)
+        tooltip: tip
+      },
+      scales: {
+        x: axis,
+        y: yAxis
+      }
+    }
+  } : {
+    type: 'line',
+    data: {
+      labels: Array.from({
+        length: dc.D
+      }, (_, i) => i + 1),
+      datasets: [{
+        label: 'Spent (cumulative)',
+        data: dc.cum,
+        borderColor: '#FF5A52',
+        backgroundColor: 'rgba(255,90,82,.12)',
+        fill: true,
+        pointRadius: 0,
+        tension: .25,
+        borderWidth: 2.5
+      }, {
+        label: 'Budget pace',
+        data: dc.pace,
+        borderColor: '#8E8E93',
+        borderDash: [5, 4],
+        pointRadius: 0,
+        borderWidth: 1.5,
+        fill: false
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        legend: {
+          labels: {
+            color: '#8E8E93',
+            boxWidth: 10
           }
-        }
+        },
+        tooltip: tip
       },
       scales: {
         x: {
+          ...axis,
           ticks: {
-            color: '#8E8E93',
-            font: {
-              size: 10
-            }
-          },
-          grid: {
-            display: false
+            ...axis.ticks,
+            maxTicksLimit: 8
           }
         },
-        y: {
-          ticks: {
-            color: '#8E8E93',
-            callback: v => fmt(v)
-          },
-          grid: {
-            color: '#2A2A2D'
-          }
-        }
+        y: yAxis
       }
     }
-  }, ym);
+  }, period + (isYear ? 'y' : 'm') + M.boot.version + (drill ? 'd' : ''));
   if (drill) {
     const kids = new Set(M.childrenOf[drill] || [drill]);
+    const list = reportable(M, M.posted.filter(t => t.date >= R.first && t.date < R.next)).filter(t => t.type === type && kids.has(t.category));
     return /*#__PURE__*/React.createElement(FullPage, {
       title: M.disp(drill),
       onBack: () => setDrill(null)
-    }, /*#__PURE__*/React.createElement(DayGroups, {
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "muted small between",
+      style: {
+        margin: '4px 2px 12px'
+      }
+    }, /*#__PURE__*/React.createElement("span", null, isYear ? 'Year ' + period : ymLabel(period), " · ", list.length, " transactions"), /*#__PURE__*/React.createElement("span", {
+      className: "num"
+    }, fmt(sumBy(list, t => t.amount)))), /*#__PURE__*/React.createElement(DayGroups, {
       M: M,
-      list: list.filter(t => kids.has(t.category)),
+      list: list,
       onEdit: ctx.editTx
     }));
   }
-  const delta = (cur, p) => p ? (cur - p) / p : null;
+  const parts = type === 'expense' ? R.expParts : R.incParts;
+  const prevBy = {};
+  (type === 'expense' ? P.expParts : P.incParts).forEach(p => {
+    prevBy[p.k] = p.v;
+  });
+  const tot = sumBy(parts, p => p.v) || 1;
+  const savedAmt = R.income - R.expense,
+    goalAmt = R.income * R.target;
+  const rateOk = R.savedPct != null && R.savedPct >= R.target;
+  const budLeft = R.budget - R.expense;
+  const maxIE = Math.max(R.income, R.expense) || 1;
   return /*#__PURE__*/React.createElement(FullPage, {
     title: "Report",
     onBack: onBack
-  }, /*#__PURE__*/React.createElement(MonthSwitch, {
-    ym: ym,
-    setYm: setYm,
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    style: {
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: !isYear ? 'on' : '',
+    onClick: () => setMode(false)
+  }, "MONTH"), /*#__PURE__*/React.createElement("button", {
+    className: isYear ? 'on' : '',
+    onClick: () => setMode(true)
+  }, "YEAR")), /*#__PURE__*/React.createElement(PeriodSwitch, {
+    period: period,
+    setPeriod: setPeriod,
     today: M.today
   }), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "kgrid",
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Opening balance"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(R.open))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
     style: {
-      marginTop: 0
+      marginTop: 8
     }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, running ? 'Current balance' : 'Ending balance'), /*#__PURE__*/React.createElement("span", {
+    className: "num t1"
+  }, fmt(R.close)))), /*#__PURE__*/React.createElement("div", {
+    className: "card"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Net income"), /*#__PURE__*/React.createElement(Delta, {
+    cur: R.net,
+    prev: P.net,
+    goodWhenUp: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: 'big num ' + (R.net >= 0 ? 'green' : 'red'),
+    style: {
+      margin: '2px 0 10px'
+    }
+  }, fmtS(R.net)), /*#__PURE__*/React.createElement("div", {
+    className: "ie-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Income"), /*#__PURE__*/React.createElement("span", {
+    className: "num blue"
+  }, fmt(R.income))), /*#__PURE__*/React.createElement("div", {
+    className: "hbar"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Income"), /*#__PURE__*/React.createElement("div", {
-    className: "v num blue"
-  }, fmt(s.income)), /*#__PURE__*/React.createElement("div", {
-    className: "small muted"
-  }, "vs last month ", fmtPct(delta(s.income, prev.income)))), /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
+    style: {
+      width: R.income / maxIE * 100 + '%',
+      background: 'var(--blue)'
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "ie-row",
+    style: {
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Expense"), /*#__PURE__*/React.createElement("span", {
+    className: "num red"
+  }, fmt(R.expense))), /*#__PURE__*/React.createElement("div", {
+    className: "hbar"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Expense"), /*#__PURE__*/React.createElement("div", {
-    className: "v num red"
-  }, fmt(s.expense)), /*#__PURE__*/React.createElement("div", {
-    className: "small muted"
-  }, "vs last month ", fmtPct(delta(s.expense, prev.expense)))), /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Net"), /*#__PURE__*/React.createElement("div", {
-    className: "v num"
-  }, fmtS(s.net))), /*#__PURE__*/React.createElement("div", {
-    className: "kbox"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "k"
-  }, "Saving rate"), /*#__PURE__*/React.createElement("div", {
-    className: 'v num ' + (s.income && s.net / s.income >= (M.settings.savings_target || .45) ? 'green' : 'amber')
-  }, s.income ? fmtPct(s.net / s.income) : '—')))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: R.expense / maxIE * 100 + '%',
+      background: 'var(--red)'
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      marginTop: 10
+    }
+  }, "vs ", isYear ? prevP : ymShort(prevP), ": income ", /*#__PURE__*/React.createElement(Delta, {
+    cur: R.income,
+    prev: P.income,
+    goodWhenUp: true
+  }), " · expense ", /*#__PURE__*/React.createElement(Delta, {
+    cur: R.expense,
+    prev: P.expense
+  })), isYear && /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      marginTop: 4
+    }
+  }, "Average per month (", R.nLive, " mo): income ", fmt(R.income / R.nLive), " · expense ", fmt(R.expense / R.nLive))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
-  }, "Last 12 months"), /*#__PURE__*/React.createElement("div", {
+  }, "Goals"), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, "🐷 Savings rate"), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, "Target ", fmtPct(R.target), " of income", running ? ' · so far' : '')), /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + (R.savedPct == null ? 'n' : rateOk ? 'g' : 'a')
+  }, R.savedPct == null ? 'No income' : fmtPct(R.savedPct) + (rateOk ? ' ✓' : ''))), /*#__PURE__*/React.createElement(GoalBar, {
+    value: Math.max(0, savedAmt),
+    goal: goalAmt,
+    color: rateOk ? 'var(--green)' : 'var(--amber)'
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "bar-legend num"
+  }, /*#__PURE__*/React.createElement("span", null, "Saved ", /*#__PURE__*/React.createElement("b", null, fmt(savedAmt))), /*#__PURE__*/React.createElement("span", null, "Goal ", fmt(goalAmt))), /*#__PURE__*/React.createElement("div", {
+    className: "divider"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, "🎯 Budget"), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, isYear ? `Sum of monthly budgets (${R.nLive} mo)` : 'Monthly budget')), /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + (!R.budget ? 'n' : budLeft >= 0 ? 'g' : 'r')
+  }, !R.budget ? 'No budget' : budLeft >= 0 ? 'Left ' + fmt(budLeft) : 'Over ' + fmt(-budLeft))), /*#__PURE__*/React.createElement(GoalBar, {
+    value: R.expense,
+    goal: R.budget,
+    color: budLeft >= 0 ? 'var(--green)' : 'var(--red)'
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "bar-legend num"
+  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", null, fmt(R.expense))), /*#__PURE__*/React.createElement("span", null, "Budget ", fmt(R.budget)))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, isYear ? 'Income & expense by month' : 'Spending vs budget pace'), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "chart-box"
   }, /*#__PURE__*/React.createElement("canvas", {
-    ref: ref
+    ref: chartRef
   }))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "By category"), /*#__PURE__*/React.createElement("div", {
     className: "typeseg"
   }, /*#__PURE__*/React.createElement("button", {
     className: 'e' + (type === 'expense' ? ' on' : ''),
@@ -1642,35 +2188,506 @@ function ReportPage({
     className: 'i' + (type === 'income' ? ' on' : ''),
     onClick: () => setType('income')
   }, "Income")), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement(Donut, {
+    parts: parts,
+    total: type === 'expense' ? R.expense : R.income,
+    label: type === 'expense' ? 'Expense' : 'Income',
+    id: period + type + M.boot.version
+  })), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
-  }, parts.map(p => /*#__PURE__*/React.createElement("div", {
-    className: "item tap",
-    key: p.k,
-    onClick: () => setDrill(p.k)
+  }, parts.map((p, i) => {
+    const b = type === 'expense' ? R.byParentBudget[p.k] : 0;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "item tap",
+      key: p.k,
+      onClick: () => setDrill(p.k)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm",
+      style: {
+        boxShadow: `inset 0 0 0 2px ${i < PALETTE.length - 1 ? PALETTE[i] : OTHER_COLOR}`
+      }
+    }, M.icon(p.k)), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, M.disp(p.k)), /*#__PURE__*/React.createElement("span", {
+      className: "amt num"
+    }, fmt(p.v))), /*#__PURE__*/React.createElement("div", {
+      className: "hbar"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: p.v / tot * 100 + '%',
+        background: i < PALETTE.length - 1 ? PALETTE[i] : OTHER_COLOR
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "between t2"
+    }, /*#__PURE__*/React.createElement("span", null, fmtPct(p.v / tot), isYear ? ' · avg ' + fmt(p.v / R.nLive) + '/mo' : ''), /*#__PURE__*/React.createElement("span", null, b ? /*#__PURE__*/React.createElement("span", {
+      className: p.v > b ? 'red' : 'green'
+    }, fmt(p.v), " / ", fmt(b)) : /*#__PURE__*/React.createElement(Delta, {
+      cur: p.v,
+      prev: prevBy[p.k],
+      goodWhenUp: type === 'income'
+    })))), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›"));
+  }), !parts.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No data")), isYear && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Month by month"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "ic sm"
-  }, M.icon(p.k)), /*#__PURE__*/React.createElement("div", {
+    className: "mtable head"
+  }, /*#__PURE__*/React.createElement("span", null, "Month"), /*#__PURE__*/React.createElement("span", null, "Income"), /*#__PURE__*/React.createElement("span", null, "Expense"), /*#__PURE__*/React.createElement("span", null, "Saved")), R.series.filter(x => x.m <= tym).map(x => /*#__PURE__*/React.createElement("div", {
+    className: "mtable tap",
+    key: x.m,
+    onClick: () => setPeriod(x.m)
+  }, /*#__PURE__*/React.createElement("span", null, MON3[+x.m.slice(5, 7) - 1]), /*#__PURE__*/React.createElement("span", {
+    className: "num blue"
+  }, fmt(x.income)), /*#__PURE__*/React.createElement("span", {
+    className: "num red"
+  }, fmt(x.expense)), /*#__PURE__*/React.createElement("span", {
+    className: 'num ' + (x.income && (x.income - x.expense) / x.income >= R.target ? 'green' : x.net < 0 ? 'red' : 'amber')
+  }, x.income ? fmtPct((x.income - x.expense) / x.income) : '—'))))), /*#__PURE__*/React.createElement("div", {
+    className: "foot-note"
+  }, UNIT_LABEL, " · transfers, investments, loans and balance adjustments are not counted as income/expense"));
+}
+
+// ===================================================================
+// WALLETS — danh sách ví · chi tiết ví · điều chỉnh số dư · thêm/sửa ví (ví thường / ví tiết kiệm)
+// ===================================================================
+function WalletsPage({
+  M,
+  ctx,
+  onBack
+}) {
+  const [edit, setEdit] = useState(null);
+  const wb = walletBalances(M);
+  const act = wb.filter(w => w.active !== false),
+    arch = wb.filter(w => w.active === false);
+  const total = sumBy(act.filter(w => M.inTotal.has(w.name)), w => w.balance);
+  const row = w => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: w.name,
+    onClick: () => ctx.openWallet(w.name),
+    style: {
+      opacity: w.active === false ? .45 : 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic"
+  }, w.icon), /*#__PURE__*/React.createElement("div", {
     className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, w.name), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, [w.kind === 'savings' ? 'Savings wallet' : 'Basic wallet', w.exclude_total && 'not in total', w.active === false && 'archived'].filter(Boolean).join(' · '))), /*#__PURE__*/React.createElement("div", {
+    className: "amt num"
+  }, fmt(w.balance)), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"));
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: "My wallets",
+    onBack: onBack,
+    right: /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: () => setEdit({
+        isNew: true
+      })
+    }, "＋")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("span", {
-    className: "t1 ellipsis"
-  }, M.disp(p.k)), /*#__PURE__*/React.createElement("span", {
-    className: "amt num"
-  }, fmt(p.v))), /*#__PURE__*/React.createElement("div", {
-    className: "hbar"
-  }, /*#__PURE__*/React.createElement("div", {
+    className: "muted"
+  }, "Total"), /*#__PURE__*/React.createElement("span", {
+    className: "mid num"
+  }, fmt(total)))), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, act.map(row)), arch.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Archived"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, arch.map(row))), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    onClick: () => setEdit({
+      isNew: true
+    })
+  }, "＋ Add wallet"), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
     style: {
-      width: p.v / tot * 100 + '%',
-      background: type === 'income' ? 'var(--blue)' : 'var(--green)'
+      marginTop: 10
+    },
+    onClick: () => setEdit({
+      isNew: true,
+      kind: 'savings',
+      icon: '🐷',
+      name: 'Savings'
+    })
+  }, "🐷 Add savings wallet"), edit && /*#__PURE__*/React.createElement(WalletEdit, {
+    M: M,
+    ctx: ctx,
+    w: edit,
+    onClose: () => setEdit(null)
+  }));
+}
+function WalletDetail({
+  M,
+  ctx,
+  name,
+  onBack
+}) {
+  const [ym, setYm] = useState(ymOf(M.today));
+  const [edit, setEdit] = useState(false);
+  const [adjust, setAdjust] = useState(false);
+  const w = M.walletBy[name] || {
+    name,
+    icon: '👛',
+    kind: 'basic',
+    opening_balance: 0
+  };
+  const bal = balanceAt(M, null, name);
+  const list = monthTx(M, ym).filter(t => t.wallet === name);
+  const inc = sumBy(list.filter(t => t.type === 'income'), t => t.amount),
+    exp = sumBy(list.filter(t => t.type === 'expense'), t => t.amount);
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: w.name,
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      textAlign: 'center'
     }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic",
+    style: {
+      margin: '0 auto 6px',
+      width: 52,
+      height: 52,
+      fontSize: 26
+    }
+  }, w.icon), /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, w.kind === 'savings' ? 'Savings wallet' : 'Wallet', " balance"), /*#__PURE__*/React.createElement("div", {
+    className: "big num"
+  }, fmt(bal)), /*#__PURE__*/React.createElement("div", {
+    className: "wbtns"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setAdjust(true)
+  }, /*#__PURE__*/React.createElement("span", null, "⚖️"), "Adjust balance"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => ctx.addTransfer(name)
+  }, /*#__PURE__*/React.createElement("span", null, "⇄"), "Transfer"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => ctx.addTx({
+      wallet: name
+    })
+  }, /*#__PURE__*/React.createElement("span", null, "＋"), "Add"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEdit(true)
+  }, /*#__PURE__*/React.createElement("span", null, "✏️"), "Edit"))), /*#__PURE__*/React.createElement(MonthSwitch, {
+    ym: ym,
+    setYm: setYm,
+    today: M.today
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Opening balance"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(balanceAt(M, ym + '-01', name)))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Inflow"), /*#__PURE__*/React.createElement("span", {
+    className: "num blue"
+  }, "+", fmt(inc))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Outflow"), /*#__PURE__*/React.createElement("span", {
+    className: "num red"
+  }, "−", fmt(exp))), /*#__PURE__*/React.createElement("div", {
+    className: "divider"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Ending balance"), /*#__PURE__*/React.createElement("span", {
+    className: "num t1"
+  }, fmt(balanceAt(M, ymAdd(ym, 1) + '-01', name))))), /*#__PURE__*/React.createElement(DayGroups, {
+    M: M,
+    list: list,
+    onEdit: ctx.editTx
+  }), edit && /*#__PURE__*/React.createElement(WalletEdit, {
+    M: M,
+    ctx: ctx,
+    w: w,
+    onClose: () => setEdit(false),
+    onRenamed: n => n !== name && ctx.openWallet(n)
+  }), adjust && /*#__PURE__*/React.createElement(AdjustSheet, {
+    M: M,
+    ctx: ctx,
+    wallet: name,
+    onClose: () => setAdjust(false)
+  }));
+}
+
+/** Nhập số dư thực tế → app ghi 1 giao dịch "Điều chỉnh số dư" bằng phần chênh lệch (không tính vào báo cáo). */
+function AdjustSheet({
+  M,
+  ctx,
+  wallet,
+  onClose
+}) {
+  const cur = balanceAt(M, null, wallet);
+  const [v, setV] = useState('');
+  const [busy, setBusy] = useState(false);
+  const target = parseNum(v);
+  const diff = target == null ? null : Math.round((target - cur) * 100) / 100;
+  const save = () => {
+    if (target == null) return;
+    if (!diff) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    ctx.adjustBalance({
+      wallet,
+      balance: target,
+      date: M.today
+    }).then(onClose).catch(e => {
+      ctx.fail(e);
+      setBusy(false);
+    });
+  };
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: "Adjust balance",
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Wallet"), /*#__PURE__*/React.createElement("span", {
+    className: "t1"
+  }, wallet)), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Balance in app"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(cur)))), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Actual balance"), /*#__PURE__*/React.createElement("input", {
+    className: "num",
+    autoFocus: true,
+    inputMode: "decimal",
+    style: {
+      textAlign: 'right',
+      fontSize: 20,
+      fontWeight: 700
+    },
+    placeholder: fmt(cur),
+    value: v,
+    onChange: e => setV(e.target.value.replace(/[^\d.,-]/g, '')),
+    onKeyDown: e => {
+      if (e.key === 'Enter') save();
+    }
+  })), diff != null && diff !== 0 && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Adjustment"), /*#__PURE__*/React.createElement("span", {
+    className: 'num t1 ' + (diff > 0 ? 'blue' : 'red')
+  }, fmtS(diff))), /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      marginTop: 6
+    }
+  }, "Recorded today as \"Balance adjustment\" — not counted in income/expense reports.")), /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      margin: '4px'
+    }
+  }, UNIT_LABEL), /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: save,
+    disabled: busy || target == null,
+    style: {
+      marginTop: 8
+    }
+  }, busy ? '…' : 'Save'));
+}
+const WALLET_ICONS = ['👛', '💵', '🏦', '💳', '🐷', '💰', '📈', '🪙'];
+function WalletEdit({
+  M,
+  ctx,
+  w,
+  onClose,
+  onRenamed
+}) {
+  const [f, setF] = useState({
+    name: w.name || '',
+    icon: w.icon || (w.kind === 'savings' ? '🐷' : '👛'),
+    kind: w.kind || 'basic',
+    opening_balance: w.isNew ? '' : String(w.opening_balance || 0),
+    exclude_total: !!w.exclude_total,
+    active: w.active !== false
+  });
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    const name = f.name.trim();
+    if (!name) {
+      ctx.fail('Wallet name is required');
+      return;
+    }
+    if ((w.isNew || name !== w.name) && M.walletBy[name]) {
+      ctx.fail('Wallet already exists');
+      return;
+    }
+    setBusy(true);
+    rpc('saveWallet', {
+      ...f,
+      name,
+      oldName: w.isNew ? '' : w.name,
+      opening_balance: parseNum(f.opening_balance) || 0
+    }).then(() => ctx.reload(w.isNew ? 'Wallet added' : 'Saved')).then(() => {
+      onClose();
+      if (onRenamed) onRenamed(name);
+    }).catch(e => {
+      ctx.fail(e);
+      setBusy(false);
+    });
+  };
+  const bool = (k, label, hint) => /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", null, label), hint && /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, hint)), /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    style: {
+      flex: 'none',
+      width: 22,
+      height: 22
+    },
+    checked: !!f[k],
+    onChange: e => setF({
+      ...f,
+      [k]: e.target.checked
+    })
+  }));
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: w.isNew ? 'New wallet' : 'Edit wallet',
+    onClose: onClose,
+    right: busy ? /*#__PURE__*/React.createElement("span", {
+      className: "spinner"
+    }) : /*#__PURE__*/React.createElement("button", {
+      className: "txt-btn",
+      onClick: save
+    }, "Save")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "typeseg"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: 'i' + (f.kind === 'basic' ? ' on' : ''),
+    onClick: () => setF({
+      ...f,
+      kind: 'basic',
+      icon: f.icon === '🐷' ? '👛' : f.icon
+    })
+  }, "👛 Basic"), /*#__PURE__*/React.createElement("button", {
+    className: 'e' + (f.kind === 'savings' ? ' on' : ''),
+    onClick: () => setF({
+      ...f,
+      kind: 'savings',
+      icon: f.icon === '👛' ? '🐷' : f.icon
+    })
+  }, "🐷 Savings")), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Name"), /*#__PURE__*/React.createElement("input", {
+    style: {
+      textAlign: 'right'
+    },
+    value: f.name,
+    onChange: e => setF({
+      ...f,
+      name: e.target.value
+    }),
+    placeholder: "e.g. Savings"
   })), /*#__PURE__*/React.createElement("div", {
-    className: "t2"
-  }, fmtPct(p.v / tot))), /*#__PURE__*/React.createElement("span", {
-    className: "chev"
-  }, "›"))), !parts.length && /*#__PURE__*/React.createElement("div", {
-    className: "empty"
-  }, "No data")));
+    className: "chips"
+  }, WALLET_ICONS.map(i => /*#__PURE__*/React.createElement("button", {
+    key: i,
+    className: 'chip' + (f.icon === i ? ' on' : ''),
+    style: {
+      fontSize: 20,
+      padding: '6px 10px'
+    },
+    onClick: () => setF({
+      ...f,
+      icon: i
+    })
+  }, i))), /*#__PURE__*/React.createElement("div", {
+    className: "field"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", null, "Starting balance"), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, w.isNew ? 'Money already in this wallet today' : 'Balance before the first transaction')), /*#__PURE__*/React.createElement("input", {
+    className: "num",
+    inputMode: "decimal",
+    style: {
+      textAlign: 'right',
+      width: 120,
+      flex: 'none'
+    },
+    placeholder: "0",
+    value: f.opening_balance,
+    onChange: e => setF({
+      ...f,
+      opening_balance: e.target.value
+    })
+  })), bool('exclude_total', 'Exclude from total balance', f.kind === 'savings' ? 'Keep savings separate from spending money' : ''), !w.isNew && bool('active', 'Active', 'Untick to archive this wallet'), f.kind === 'savings' && /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      margin: '6px 4px'
+    }
+  }, "Move money in with ⇄ Transfer (Cash → ", f.name || 'Savings', "). Transfers don't count as expenses, so your savings rate stays correct."), /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      margin: '4px'
+    }
+  }, UNIT_LABEL));
 }
 
 // ===================================================================
@@ -1684,7 +2701,7 @@ function CategoryPicker({
   top
 }) {
   const recent = (top || []).filter(n => M.catBy[n]);
-  const parents = M.cats.filter(c => c.type === type && !c.parent && c.active !== false && !(c.name === 'Điều chỉnh số dư' && c.name !== value)).sort((a, b) => a.sort - b.sort);
+  const parents = M.cats.filter(c => c.type === type && !c.parent && c.active !== false && !([CAT_ADJUST, CAT_TRANSFER_OUT, CAT_TRANSFER_IN].includes(c.name) && c.name !== value)).sort((a, b) => a.sort - b.sort);
   return [recent.length ? /*#__PURE__*/React.createElement("div", {
     key: "__top"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1738,7 +2755,7 @@ function CategorySelect({
   const top = useMemo(() => suggestCategories(M, tab).slice(0, 8), [M, tab]);
   const fq = fold(q);
   const ok = n => !fq || fold(M.disp(n)).includes(fq) || fold(n).includes(fq);
-  const parents = M.cats.filter(c => c.type === tab && !c.parent && c.active !== false && c.name !== 'Điều chỉnh số dư').sort((a, b) => a.sort - b.sort);
+  const parents = M.cats.filter(c => c.type === tab && !c.parent && c.active !== false && ![CAT_ADJUST, CAT_TRANSFER_OUT, CAT_TRANSFER_IN].includes(c.name)).sort((a, b) => a.sort - b.sort);
   const row = (n, child, last) => /*#__PURE__*/React.createElement("div", {
     key: n,
     className: 'cs-row' + (child ? ' child' : '') + (last ? ' last' : '') + (value === n ? ' on' : ''),
@@ -1826,6 +2843,12 @@ const dateLabel = (d, today) => {
     weekday: 'long'
   }) + ', ' + d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4);
 };
+
+/**
+ * Thêm/sửa giao dịch kiểu Money Lover. Chế độ: Expense · Income · Transfer (giữa 2 ví).
+ * Nhanh nhất: gõ số → chạm 1 nhóm hay dùng → ✓ (Save). Không cần mở màn chọn nhóm.
+ * tx: giao dịch đang sửa | {wallet} (thêm vào ví) | {transfer:true, from} | null
+ */
 function AddTxSheet({
   M,
   ctx,
@@ -1834,18 +2857,30 @@ function AddTxSheet({
   onClose
 }) {
   const editing = !!(tx && tx.id);
-  const [type, setType] = useState(tx ? tx.type : 'expense');
+  const pair = editing && isTransfer(tx) ? transferPair(M, tx) : null;
+  const wallets = M.wallets.filter(w => w.active !== false || tx && w.name === tx.wallet);
+  const defWallet = tx && tx.wallet || (wallets[0] || {}).name || DEFAULT_WALLET;
+  const [mode, setMode] = useState(pair || tx && tx.transfer ? 'transfer' : tx && tx.type ? tx.type : 'expense');
   const [amount, setAmount] = useState(tx && tx.amount ? String(tx.amount) : '');
-  const [category, setCategory] = useState(tx ? tx.category : '');
+  const [category, setCategory] = useState(tx && tx.category && !pair ? tx.category : '');
   const [auto, setAuto] = useState(false); // nhóm đang là đoán tự động theo số tiền
   const [note, setNote] = useState(tx ? tx.note || '' : '');
-  const [date, setDate] = useState(tx ? tx.date : M.today);
+  const [date, setDate] = useState(tx && tx.date ? tx.date : M.today);
+  const [wallet, setWallet] = useState(defWallet);
+  const firstOther = n => (wallets.find(w => w.name !== n) || {}).name || '';
+  const [from, setFrom] = useState(pair && pair.out ? pair.out.wallet : tx && tx.from || defWallet);
+  const [to, setTo] = useState(pair && pair.in ? pair.in.wallet : (wallets.find(w => w.kind === 'savings' && w.name !== (tx && tx.from || defWallet)) || {}).name || firstOther(tx && tx.from || defWallet));
   const [quick, setQuick] = useState('');
   const [picker, setPicker] = useState(false);
   const [kp, setKp] = useState(!editing); // thêm mới: bàn phím số mở sẵn như Money Lover
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const quickAmts = String(M.settings.quick_amounts || '').split(',').map(s => parseNum(s)).filter(Boolean);
+  const isT = mode === 'transfer';
+  const top = useMemo(() => isT ? [] : suggestCategories(M, mode).slice(0, 10), [M, mode]);
+  const chips = category && top.indexOf(category) < 0 ? [category].concat(top.slice(0, 9)) : top;
+  const amt = parseNum(amount);
+  const ready = amt > 0 && (isT ? from && to && from !== to : !!category);
   const onQuick = v => {
     setQuick(v);
     const p = parseQuick(M, v);
@@ -1853,29 +2888,50 @@ function AddTxSheet({
     if (p.category) {
       setCategory(p.category);
       setAuto(false);
-      if (p.type) setType(p.type);
+      if (p.type) setMode(p.type);
     }
     setNote(p.note || '');
   };
   const key = k => {
+    setErr('');
     setAmount(a => {
       if (k === '⌫') return a.slice(0, -1);
       if (k === 'C') return '';
-      if (k === '00') return a ? a + '00' : a;
-      if (k === '000') return a ? a + '000' : a;
+      if (k === '00' || k === '000') return a ? a + k : a;
       if (a === '0') return k;
       return a + k;
     });
   };
   const save = () => {
-    const amt = parseNum(amount);
     if (!(amt > 0)) {
       setErr('Enter an amount');
       setKp(true);
       return;
     }
+    if (isT) {
+      if (!from || !to || from === to) {
+        setErr(wallets.length < 2 ? 'Add a second wallet first (Account › My wallets)' : 'Choose two different wallets');
+        setKp(false);
+        return;
+      }
+      setBusy(true);
+      setErr('');
+      ctx.saveTransfer({
+        link_id: pair ? tx.link_id : '',
+        from,
+        to,
+        amount: amt,
+        date,
+        note: note.trim()
+      }).then(onClose).catch(e => {
+        setErr(String(e));
+        setBusy(false);
+      });
+      return;
+    }
     if (!category) {
-      setPicker(true);
+      setKp(false);
+      if (!top.length) setPicker(true);else setErr('Choose a category');
       return;
     }
     setBusy(true);
@@ -1883,11 +2939,11 @@ function AddTxSheet({
     ctx.saveTx({
       id: tx && tx.id,
       date,
-      type,
+      type: mode,
       category,
       amount: amt,
       note: note.trim(),
-      wallet: tx && tx.wallet || 'Cash',
+      wallet,
       status: tx && tx.status === 'pending' ? 'posted' : undefined
     }).then(onClose).catch(e => {
       setErr(String(e));
@@ -1896,8 +2952,8 @@ function AddTxSheet({
   };
   // Đoán nhóm theo số tiền khi chưa chọn tay
   useEffect(() => {
-    if (editing || category && !auto) return;
-    const c = predictByAmount(M, type, parseNum(amount));
+    if (editing || isT || category && !auto) return;
+    const c = predictByAmount(M, mode, amt);
     if (c) {
       setCategory(c);
       setAuto(true);
@@ -1906,21 +2962,65 @@ function AddTxSheet({
       setAuto(false);
     }
   }, [amount]);
-  const done = () => {
-    setKp(false);
-    if (!category) setPicker(true);
+  const pick = (n, t) => {
+    setCategory(n);
+    setAuto(false);
+    if (t) setMode(t);
+    setPicker(false);
+    setErr('');
+  };
+  const switchMode = m => {
+    if (m === mode) return;
+    setMode(m);
+    setErr('');
+    if (m !== 'transfer' && category && M.catBy[category] && M.catBy[category].type !== m) {
+      setCategory('');
+      setAuto(false);
+    }
   };
   const del = () => {
-    if (!confirm('Delete this transaction?')) return;
+    if (!confirm(pair ? 'Delete this transfer (both sides)?' : 'Delete this transaction?')) return;
     setBusy(true);
     ctx.deleteTx(tx.id).then(onClose).catch(e => {
       setErr(String(e));
       setBusy(false);
     });
   };
-  const amtColor = type === 'income' ? 'var(--blue)' : 'var(--green)';
+  const amtColor = mode === 'income' ? 'var(--blue)' : isT ? 'var(--text)' : 'var(--red)';
+  const yesterday = (() => {
+    const y = new Date(M.today + 'T00:00:00');
+    y.setDate(y.getDate() - 1);
+    return ymdOf(y);
+  })();
+  const walletSel = (val, set, label, icon) => /*#__PURE__*/React.createElement("label", {
+    className: "mlrow",
+    style: {
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ml-ic"
+  }, icon), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "small muted",
+    style: {
+      display: label ? 'block' : 'none'
+    }
+  }, label), val ? ((M.walletBy[val] || {}).icon || '👛') + ' ' + val : /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Choose wallet")), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "▾"), /*#__PURE__*/React.createElement("select", {
+    className: "ml-date",
+    value: val,
+    onChange: e => set(e.target.value),
+    onFocus: () => setKp(false)
+  }, wallets.map(w => /*#__PURE__*/React.createElement("option", {
+    key: w.name,
+    value: w.name
+  }, w.name))));
   return /*#__PURE__*/React.createElement(Sheet, {
-    title: editing ? 'Edit transaction' : 'Add transaction',
+    title: editing ? pair ? 'Edit transfer' : 'Edit transaction' : 'Add transaction',
     onClose: onClose,
     right: busy ? /*#__PURE__*/React.createElement("span", {
       className: "spinner"
@@ -1928,7 +3028,18 @@ function AddTxSheet({
       className: "txt-btn",
       onClick: save
     }, "Save")
-  }, !editing && quickMode && /*#__PURE__*/React.createElement("div", {
+  }, !(editing && pair) && /*#__PURE__*/React.createElement("div", {
+    className: "typeseg three"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: 'e' + (mode === 'expense' ? ' on' : ''),
+    onClick: () => switchMode('expense')
+  }, "Expense"), /*#__PURE__*/React.createElement("button", {
+    className: 'i' + (mode === 'income' ? ' on' : ''),
+    onClick: () => switchMode('income')
+  }, "Income"), /*#__PURE__*/React.createElement("button", {
+    className: 't' + (isT ? ' on' : ''),
+    onClick: () => switchMode('transfer')
+  }, "⇄ Transfer")), !editing && quickMode && !isT && /*#__PURE__*/React.createElement("div", {
     className: "quick"
   }, /*#__PURE__*/React.createElement("span", null, "⚡"), /*#__PURE__*/React.createElement("input", {
     placeholder: "Quick entry: \"cf 35\"",
@@ -1955,7 +3066,7 @@ function AddTxSheet({
     style: {
       color: amount ? amtColor : 'var(--muted)'
     }
-  }, amount ? fmt(parseNum(amount)) : '0')), /*#__PURE__*/React.createElement("div", {
+  }, amount ? fmt(amt) : '0')), isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "mlrow",
     onClick: () => {
       setKp(false);
@@ -1973,7 +3084,24 @@ function AddTxSheet({
     }
   }, "auto")), /*#__PURE__*/React.createElement("span", {
     className: "chev"
-  }, "›")), /*#__PURE__*/React.createElement("div", {
+  }, "›")), chips.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "catchips"
+  }, chips.map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    className: category === n ? 'on' : '',
+    onClick: () => pick(n)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ci"
+  }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+    className: "ellipsis"
+  }, M.disp(n)))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setKp(false);
+      setPicker(true);
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ci"
+  }, "⋯"), /*#__PURE__*/React.createElement("span", null, "More")))), /*#__PURE__*/React.createElement("div", {
     className: "mlrow"
   }, /*#__PURE__*/React.createElement("span", {
     className: "ml-ic"
@@ -1983,28 +3111,31 @@ function AddTxSheet({
     value: note,
     onChange: e => setNote(e.target.value),
     onFocus: () => setKp(false)
-  })), /*#__PURE__*/React.createElement("label", {
-    className: "mlrow",
-    style: {
-      position: 'relative'
-    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mlrow"
   }, /*#__PURE__*/React.createElement("span", {
     className: "ml-ic"
-  }, "📅"), /*#__PURE__*/React.createElement("span", {
-    className: "grow"
-  }, dateLabel(date, M.today)), /*#__PURE__*/React.createElement("input", {
+  }, "📅"), /*#__PURE__*/React.createElement("label", {
+    className: "grow",
+    style: {
+      position: 'relative',
+      alignSelf: 'stretch',
+      display: 'flex',
+      alignItems: 'center'
+    }
+  }, /*#__PURE__*/React.createElement("span", null, dateLabel(date, M.today)), /*#__PURE__*/React.createElement("input", {
     type: "date",
     className: "ml-date",
     value: date,
     onChange: e => e.target.value && setDate(e.target.value),
     onFocus: () => setKp(false)
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "mlrow"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "ml-ic"
-  }, "👛"), /*#__PURE__*/React.createElement("span", {
-    className: "grow"
-  }, tx && tx.wallet || 'Cash'))), /*#__PURE__*/React.createElement(ErrBox, {
+  })), /*#__PURE__*/React.createElement("button", {
+    className: 'chip' + (date === M.today ? ' on' : ''),
+    onClick: () => setDate(M.today)
+  }, "Today"), /*#__PURE__*/React.createElement("button", {
+    className: 'chip' + (date === yesterday ? ' on' : ''),
+    onClick: () => setDate(yesterday)
+  }, "Yesterday")), !isT && (wallets.length > 1 || wallet !== DEFAULT_WALLET) && walletSel(wallet, setWallet, '', '👛')), /*#__PURE__*/React.createElement(ErrBox, {
     msg: err
   }), !kp && /*#__PURE__*/React.createElement("button", {
     className: "btn",
@@ -2042,22 +3173,19 @@ function AddTxSheet({
     onClick: () => key(k)
   }, k)), /*#__PURE__*/React.createElement("button", {
     className: "ok",
-    onClick: done
-  }, "✓"), ['000', '0', '00'].map(k => /*#__PURE__*/React.createElement("button", {
+    onClick: save,
+    disabled: busy
+  }, ready ? 'Save' : '✓'), ['000', '0', '00'].map(k => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => key(k)
   }, k)))), picker && /*#__PURE__*/React.createElement(CategorySelect, {
     M: M,
-    type: type,
+    type: isT ? 'expense' : mode,
     value: category,
     onClose: () => setPicker(false),
     onPick: (n, t) => {
-      setCategory(n);
-      setAuto(false);
-      setType(t);
-      setPicker(false);
-      setErr('');
-      if (!parseNum(amount)) setKp(true);
+      pick(n, t);
+      if (!amt) setKp(true);
     }
   }));
 }
@@ -2216,7 +3344,7 @@ function AccountPage({
     className: "hdr"
   }, /*#__PURE__*/React.createElement("h1", null, "Account"), /*#__PURE__*/React.createElement("div", {
     className: "sub"
-  }, /*#__PURE__*/React.createElement("span", null, "Personal · Cash wallet"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, "Personal · ", M.wallets.filter(w => w.active !== false).length, " wallet(s)"), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
@@ -2249,6 +3377,17 @@ function AccountPage({
   }, "Manage"), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
   }, /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => ctx.openWallets()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, "👛"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "My wallets"), /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, M.wallets.filter(w => w.active !== false).length), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("div", {
     className: "item tap",
     onClick: () => setSub('recurring')
   }, /*#__PURE__*/React.createElement("div", {
@@ -2721,7 +3860,11 @@ function App() {
     }
   });
   const [sheet, setSheet] = useState(null); // {kind:'tx', tx} | {kind:'budgets', ym, focus}
-  const [overlay, setOverlay] = useState(null); // {kind:'budget', parent, ym} | {kind:'report', ym}
+  const [stack, setStack] = useState([]); // trang phủ: {kind:'budget'|'report'|'wallets'|'wallet', ...}; Back = bỏ trang trên cùng
+  const overlay = stack[stack.length - 1] || null;
+  const push = o => setStack(s => s.concat([o]));
+  const pop = () => setStack(s => s.slice(0, -1));
+  const walletState = useState('');
   const M = useMemo(() => boot ? buildModel(boot) : null, [boot]);
   const ymState = useState(() => boot ? ymOf(boot.today) : null);
   const [ym, setYm] = ymState;
@@ -2837,9 +3980,10 @@ function App() {
         return list;
       }
       return list.concat([{
-        wallet: 'Cash',
+        wallet: DEFAULT_WALLET,
         note: '',
         recurring_id: '',
+        link_id: '',
         ...rec
       }]);
     });
@@ -2848,6 +3992,7 @@ function App() {
   });
   const ctx = {
     ymState,
+    walletState,
     go: setTab,
     fail,
     reload,
@@ -2855,15 +4000,33 @@ function App() {
       kind: 'tx',
       tx: t
     }),
-    openBudget: (parent, ym) => setOverlay({
+    addTx: preset => setSheet({
+      kind: 'tx',
+      tx: preset || null
+    }),
+    addTransfer: from => setSheet({
+      kind: 'tx',
+      tx: {
+        transfer: true,
+        from
+      }
+    }),
+    openBudget: (parent, ym) => push({
       kind: 'budget',
       parent,
       ym
     }),
-    openReport: ym => setOverlay({
+    openReport: ym => push({
       kind: 'report',
       ym
     }),
+    openWallets: () => push({
+      kind: 'wallets'
+    }),
+    openWallet: name => setStack(s => s.filter(o => o.kind !== 'wallet').concat([{
+      kind: 'wallet',
+      name
+    }])),
     editBudgets: (ym, focus) => setSheet({
       kind: 'budgets',
       ym,
@@ -2874,9 +4037,10 @@ function App() {
       if (t.id) return saveTxNow(t);
       const tmp = 'tmp_' + Date.now();
       const row = {
-        wallet: 'Cash',
+        wallet: DEFAULT_WALLET,
         note: '',
         recurring_id: '',
+        link_id: '',
         ...t,
         id: tmp,
         source: 'manual',
@@ -2902,8 +4066,87 @@ function App() {
       return Promise.resolve();
     },
     deleteTx: id => rpc('deleteTransaction', id).then(() => {
-      patchLocal(list => list.filter(x => x.id !== id));
+      patchLocal(list => {
+        const t = list.find(x => x.id === id),
+          link = t && t.link_id;
+        return list.filter(x => x.id !== id && !(link && x.link_id === link));
+      });
       say('Deleted');
+      load().catch(() => {});
+    }),
+    // Chuyển tiền: hiện ngay 2 dòng (ra/vào), gửi lên ở nền.
+    saveTransfer: p => {
+      const tmp = p.link_id || 'tmpl_' + Date.now();
+      const base = {
+        amount: p.amount,
+        date: p.date,
+        note: p.note,
+        status: 'posted',
+        source: 'transfer',
+        recurring_id: '',
+        link_id: tmp,
+        created_at: new Date().toISOString()
+      };
+      const rows = [{
+        ...base,
+        id: tmp + '_o',
+        type: 'expense',
+        category: CAT_TRANSFER_OUT,
+        wallet: p.from
+      }, {
+        ...base,
+        id: tmp + '_i',
+        type: 'income',
+        category: CAT_TRANSFER_IN,
+        wallet: p.to
+      }];
+      patchLocal(list => p.link_id ? list.map(x => x.link_id === p.link_id ? {
+        ...x,
+        amount: p.amount,
+        date: p.date,
+        note: p.note,
+        wallet: x.type === 'income' ? p.to : p.from
+      } : x) : list.concat(rows));
+      if (!p.link_id) rows.forEach(r => {
+        pendingRef.current[r.id] = r;
+      });
+      say('Saving transfer ' + fmt(p.amount) + '…');
+      rpc('saveTransfer', p).then(res => {
+        rows.forEach(r => {
+          delete pendingRef.current[r.id];
+        });
+        if (!p.link_id) patchLocal(list => list.map(x => x.link_id === tmp ? {
+          ...x,
+          link_id: res.link_id,
+          id: x.type === 'income' ? res.ids.in : res.ids.out
+        } : x));
+        say('Transferred ' + fmt(p.amount) + ' · ' + p.from + ' → ' + p.to);
+        load().catch(() => {});
+      }).catch(e => {
+        rows.forEach(r => {
+          delete pendingRef.current[r.id];
+        });
+        if (!p.link_id) patchLocal(list => list.filter(x => x.link_id !== tmp));else load().catch(() => {});
+        say('⚠️ Not saved: ' + String(e));
+      });
+      return Promise.resolve();
+    },
+    adjustBalance: p => rpc('adjustBalance', p).then(res => {
+      if (res.id) patchLocal(list => list.concat([{
+        id: res.id,
+        date: p.date,
+        type: res.type,
+        category: CAT_ADJUST,
+        amount: res.amount,
+        note: '',
+        wallet: p.wallet,
+        source: 'adjust',
+        status: 'posted',
+        recurring_id: '',
+        link_id: '',
+        created_at: new Date().toISOString()
+      }]));
+      say(res.unchanged ? 'Balance already correct' : 'Balance adjusted ' + (res.type === 'income' ? '+' : '−') + fmt(res.amount));
       load().catch(() => {});
     }),
     resolveRecurring: p => rpc('resolveRecurring', p).then(() => {
@@ -2949,16 +4192,29 @@ function App() {
   }, /*#__PURE__*/React.createElement(ErrBox, {
     msg: error
   }), ym && page), overlay && overlay.kind === 'budget' && /*#__PURE__*/React.createElement(BudgetDetail, {
+    key: stack.length,
     M: M,
     ctx: ctx,
     parent: overlay.parent,
     ym: overlay.ym,
-    onBack: () => setOverlay(null)
+    onBack: pop
   }), overlay && overlay.kind === 'report' && /*#__PURE__*/React.createElement(ReportPage, {
+    key: stack.length,
     M: M,
     ctx: ctx,
     ym: overlay.ym,
-    onBack: () => setOverlay(null)
+    onBack: pop
+  }), overlay && overlay.kind === 'wallets' && /*#__PURE__*/React.createElement(WalletsPage, {
+    key: stack.length,
+    M: M,
+    ctx: ctx,
+    onBack: pop
+  }), overlay && overlay.kind === 'wallet' && /*#__PURE__*/React.createElement(WalletDetail, {
+    key: overlay.name,
+    M: M,
+    ctx: ctx,
+    name: overlay.name,
+    onBack: pop
   }), /*#__PURE__*/React.createElement("nav", {
     className: "nav"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2974,7 +4230,7 @@ function App() {
     key: t.id,
     className: tab === t.id && !overlay ? 'on' : '',
     onClick: () => {
-      setOverlay(null);
+      setStack([]);
       setTab(t.id);
     }
   }, /*#__PURE__*/React.createElement("span", {
