@@ -76,10 +76,12 @@ function barImage(width, ratio, marker, color) {
   return dc.getImage();
 }
 
+// Thanh ngân sách chỉ so phần chi đều hàng tháng (quỹ năm như du lịch, khám bệnh không làm lệch nhịp).
+const regular = d => d.spentReg != null ? d.spentReg : d.spentMTD;
 function paceColor(d) {
   if (!d.budget) return GREEN;
-  if (d.spentMTD > d.budget) return RED;
-  if (d.spentMTD > d.budget * d.day / d.days) return AMBER;
+  if (regular(d) > d.budget) return RED;
+  if (regular(d) > d.budget * d.day / d.days) return AMBER;
   return GREEN;
 }
 
@@ -103,13 +105,13 @@ function summary(st, d, width) {
   text(st, "Spent this month", 11, MUTED);
   st.addSpacer(1);
   const v = text(st, fmt(d.spentMTD), 24, TEXT, "heavy");
-  v.textColor = d.budget && d.spentMTD > d.budget ? RED : TEXT;
+  v.textColor = d.budget && regular(d) > d.budget ? RED : TEXT;
   st.addSpacer(5);
-  const ratio = d.budget ? d.spentMTD / d.budget : 0;
+  const ratio = d.budget ? regular(d) / d.budget : 0;
   const img = st.addImage(barImage(width, ratio, d.budget ? d.day / d.days : 0, paceColor(d)));
   img.imageSize = new Size(width, 12);
   st.addSpacer(4);
-  const left = d.budget - d.spentMTD, daysLeft = d.days - d.day + 1;
+  const left = d.budget - regular(d), daysLeft = d.days - d.day + 1;
   const line = !d.budget ? "Today " + fmt(d.spentToday)
     : left >= 0 ? "Left " + fmt(left) + " · " + daysLeft + "d" : "Over " + fmt(-left);
   text(st, line, 11, d.budget && left < 0 ? RED : MUTED, true);
