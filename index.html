@@ -295,7 +295,6 @@ input, select, textarea { font: inherit; color: var(--text); }
 .binp { width: 116px; flex: none; text-align: right; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; outline: none; font-size: 16px; font-weight: 600; }
 .binp:focus { border-color: var(--green); }
 .binp::placeholder { color: #55555A; font-weight: 400; }
-.potpill { margin-left: 6px; font-size: 10.5px; padding: 2px 7px; vertical-align: 1px; }
 .mini-seg { display: flex; background: var(--bg); border-radius: 9px; padding: 2px; flex: none; }
 .mini-seg button { padding: 5px 10px; border-radius: 7px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .mini-seg button.on { background: var(--green-bg); color: var(--green); }
@@ -425,7 +424,6 @@ function buildModel(boot) {
   });
   const excluded = name => !!(catBy[name] && catBy[name].exclude);
   const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
-  const irregular = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].irregular); // quỹ năm: cờ đặt ở nhóm cha
   const disp = name => catBy[name] && catBy[name].display || name;
   const icon = name => catBy[name] && catBy[name].icon || '•';
   tx.forEach(t => {
@@ -479,7 +477,6 @@ function buildModel(boot) {
     childrenOf,
     excluded,
     isFixed,
-    irregular,
     disp,
     icon,
     opening,
@@ -571,18 +568,12 @@ function forecastOf(spent, target, prog, fixed, pendingAmt) {
   return spent + pace * (D - d);
 }
 
-/**
- * Bảng ngân sách theo nhóm cha cho tháng ym — chỉ nhóm chi đều hàng tháng.
- * Nhóm quỹ năm (irregular) tách sang potTable: không tính vào nhịp tháng, to-date, safe/day.
- */
+/** Bảng ngân sách theo nhóm cha cho tháng ym. */
 function budgetTable(M, ym) {
   const prog = monthProgress(M, ym);
   const lb = leafBudget(M, ym);
-  Object.keys(lb).forEach(c => {
-    if (M.irregular(c)) delete lb[c];
-  });
-  const exp = reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense' && !M.irregular(t.category));
-  const pend = M.pending.filter(t => t.date.startsWith(ym) && !M.irregular(t.category));
+  const exp = reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense');
+  const pend = M.pending.filter(t => t.date.startsWith(ym));
   const leafSpent = {};
   exp.forEach(t => {
     leafSpent[t.category] = (leafSpent[t.category] || 0) + t.amount;
@@ -652,59 +643,7 @@ function budgetTable(M, ym) {
   return {
     prog,
     rows,
-    total: T,
-    pots: potTable(M, ym)
-  };
-}
-
-/**
- * Quỹ năm (nhóm irregular): ngân sách tháng cộng dồn từ tháng 1 đến tháng ym ("đã tích luỹ"),
- * so với đã chi từ đầu năm. Tháng không tiêu thì tiền để dành sang tháng sau. Reset mỗi tháng 1.
- */
-function potTable(M, ym) {
-  const y = ym.slice(0, 4),
-    m = +ym.slice(5, 7);
-  const R = {};
-  const row = c => {
-    const p = M.parentOf(c);
-    return R[p] = R[p] || {
-      name: p,
-      accrued: 0,
-      annual: 0,
-      ytd: 0,
-      month: 0
-    };
-  };
-  for (let k = 1; k <= 12; k++) {
-    const lb = leafBudget(M, y + '-' + pad2(k));
-    Object.keys(lb).forEach(c => {
-      if (!M.irregular(c) || M.excluded(c) || !lb[c]) return;
-      const r = row(c);
-      r.annual += lb[c];
-      if (k <= m) r.accrued += lb[c];
-    });
-  }
-  M.posted.forEach(t => {
-    if (t.type !== 'expense' || !M.irregular(t.category) || M.excluded(t.category)) return;
-    if (!t.date.startsWith(y) || t.date.slice(0, 7) > ym) return;
-    const r = row(t.category);
-    r.ytd += t.amount;
-    if (t.date.startsWith(ym)) r.month += t.amount;
-  });
-  const rows = Object.values(R).map(r => ({
-    ...r,
-    left: r.accrued - r.ytd
-  })).sort((a, b) => b.annual - a.annual || b.ytd - a.ytd);
-  const sum = k => sumBy(rows, r => r[k]);
-  return {
-    rows,
-    total: {
-      accrued: sum('accrued'),
-      annual: sum('annual'),
-      ytd: sum('ytd'),
-      month: sum('month'),
-      left: sum('accrued') - sum('ytd')
-    }
+    total: T
   };
 }
 
@@ -718,59 +657,6 @@ function avgSpend(M, n = 3) {
     });
   }
   return out;
-}
-function potStatus(r) {
-  if (!r.annual) return {
-    cls: 'n',
-    text: 'No budget'
-  };
-  if (r.ytd > r.annual) return {
-    cls: 'r',
-    text: 'Over year +' + fmt(r.ytd - r.annual)
-  };
-  if (r.ytd > r.accrued) return {
-    cls: 'a',
-    text: 'Used ahead ' + fmt(r.ytd - r.accrued)
-  };
-  return {
-    cls: 'g',
-    text: 'In pot ' + fmt(r.accrued - r.ytd)
-  };
-}
-
-/** Status 1 dòng budget → {cls, text}. */
-function paceStatus(r, prog) {
-  if (!r.target) return r.spent ? {
-    cls: 'n',
-    text: 'No budget'
-  } : {
-    cls: 'n',
-    text: '—'
-  };
-  if (r.spent > r.target) return {
-    cls: 'r',
-    text: 'Over month +' + fmt(r.spent - r.target)
-  };
-  if (r.fixed) return {
-    cls: 'n',
-    text: 'Fixed bill · ' + fmtPct(r.spent / r.target)
-  };
-  if (!prog.isCurrent) return {
-    cls: 'g',
-    text: 'Under ' + fmt(r.target - r.spent)
-  };
-  if (r.diffToDate > 0) return {
-    cls: 'r',
-    text: 'Over to date +' + fmt(r.diffToDate)
-  };
-  if (r.forecast > r.target) return {
-    cls: 'a',
-    text: 'Forecast over +' + fmt(r.forecast - r.target)
-  };
-  return {
-    cls: 'g',
-    text: 'Under −' + fmt(-r.diffToDate)
-  };
 }
 
 /** Thu/chi/tiết kiệm của tháng + dự báo. */
@@ -791,7 +677,7 @@ function savingsView(M, ym) {
   const avgInc = prev.length ? sumBy(prev, v => v) / prev.length : 0;
   const expIncome = bt.prog.d >= bt.prog.D ? s.income : Math.max(s.income, avgInc);
   const target = Number(M.settings.savings_target) || 0.45;
-  const fcSpend = Math.max(s.expense, bt.total.forecast + bt.pots.total.month);
+  const fcSpend = Math.max(s.expense, bt.total.forecast);
   const fcSaved = expIncome - fcSpend;
   return {
     ...s,
@@ -836,8 +722,7 @@ function periodReport(M, period) {
   const expense = sumBy(list.filter(t => t.type === 'expense'), t => t.amount);
   const tym = ymOf(M.today);
   const live = months.filter(m => m <= tym); // tháng đã có số liệu
-  // Tháng: ngân sách chỉ gồm nhóm chi đều (quỹ năm xem ở Budgets). Năm: cộng cả quỹ năm.
-  const inBudget = c => !M.excluded(c) && (isYear || !M.irregular(c));
+  const inBudget = c => !M.excluded(c);
   const budgetOf = m => Object.entries(leafBudget(M, m)).filter(([c]) => inBudget(c)).reduce((s, [, v]) => s + v, 0);
   const budget = sumBy(live, budgetOf);
   const budgetSpent = sumBy(list.filter(t => t.type === 'expense' && inBudget(t.category)), t => t.amount);
@@ -878,7 +763,7 @@ function dailyCumulative(M, ym) {
   const D = daysIn(ym),
     prog = monthProgress(M, ym);
   const daily = Array(D).fill(0);
-  reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense' && !M.irregular(t.category)).forEach(t => {
+  reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense').forEach(t => {
     daily[+t.date.slice(8, 10) - 1] += t.amount;
   });
   const cum = [];
@@ -886,7 +771,7 @@ function dailyCumulative(M, ym) {
     cum[i] = i < prog.d || !prog.isCurrent ? s + v : null;
     return s + v;
   }, 0);
-  const target = Object.entries(leafBudget(M, ym)).filter(([c]) => !M.excluded(c) && !M.irregular(c)).reduce((s, [, v]) => s + v, 0);
+  const target = Object.entries(leafBudget(M, ym)).filter(([c]) => !M.excluded(c)).reduce((s, [, v]) => s + v, 0);
   return {
     D,
     daily,
@@ -1557,7 +1442,7 @@ function BudgetsPage({
     className: 'num ' + (sv.fcSpend > sv.spendLimit ? 'red' : 'green')
   }, fmt(sv.spendLimit)))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
-  }, "Monthly budgets ", /*#__PURE__*/React.createElement("button", {
+  }, "Category budgets ", /*#__PURE__*/React.createElement("button", {
     className: "link",
     onClick: () => ctx.editBudgets(ym)
   }, "✏️ Edit budgets")), /*#__PURE__*/React.createElement("div", {
@@ -1589,89 +1474,7 @@ function BudgetsPage({
     }));
   }), !bt.rows.length && /*#__PURE__*/React.createElement("div", {
     className: "empty"
-  }, "No budgets yet")), /*#__PURE__*/React.createElement(PotsCard, {
-    M: M,
-    ctx: ctx,
-    ym: ym,
-    pots: bt.pots
-  }));
-}
-
-/** Quỹ năm: nhóm không phát sinh đều (du lịch, khám bệnh, quà...). Ngân sách tháng tích luỹ dần, chi lúc nào trừ lúc đó. */
-function PotsCard({
-  M,
-  ctx,
-  ym,
-  pots
-}) {
-  if (!pots.rows.length) return null;
-  const T = pots.total;
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "sec-title"
-  }, "Yearly pots · ", ym.slice(0, 4), " ", /*#__PURE__*/React.createElement("button", {
-    className: "link",
-    onClick: () => ctx.editBudgets(ym)
-  }, "✏️ Edit")), /*#__PURE__*/React.createElement("div", {
-    className: "card"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "between"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "muted small",
-    style: {
-      letterSpacing: .8,
-      fontWeight: 600
-    }
-  }, "LEFT IN POTS"), /*#__PURE__*/React.createElement("div", {
-    className: 'mid num ' + (T.left < 0 ? 'red' : '')
-  }, fmt(T.left))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      textAlign: 'right'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "small muted"
-  }, "Spent this year"), /*#__PURE__*/React.createElement("div", {
-    className: "num t1"
-  }, fmt(T.ytd), " / ", fmt(T.annual)))), /*#__PURE__*/React.createElement("div", {
-    className: "small muted",
-    style: {
-      marginTop: 8
-    }
-  }, "For costs that don't happen every month. Each month's budget is saved up; spending draws from the pot. Not counted in daily pace.")), /*#__PURE__*/React.createElement("div", {
-    className: "card tight"
-  }, pots.rows.map(r => {
-    const st = potStatus(r),
-      mx = Math.max(r.annual, r.ytd) || 1;
-    return /*#__PURE__*/React.createElement("div", {
-      className: "bud",
-      key: r.name,
-      onClick: () => ctx.editBudgets(ym, r.name)
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "between"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "row grow"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "ic sm"
-    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
-      className: "t1 ellipsis"
-    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
-      className: 'pill ' + st.cls
-    }, st.text)), /*#__PURE__*/React.createElement("div", {
-      className: "bar"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "fill",
-      style: {
-        width: Math.min(100, r.ytd / mx * 100) + '%',
-        background: st.cls === 'r' ? 'var(--red)' : st.cls === 'a' ? 'var(--amber)' : st.cls === 'n' ? 'var(--muted)' : 'var(--green)'
-      }
-    }), r.annual > 0 && /*#__PURE__*/React.createElement("div", {
-      className: "tick",
-      style: {
-        left: `calc(${Math.min(100, r.accrued / mx * 100)}% - 1px)`
-      }
-    })), /*#__PURE__*/React.createElement("div", {
-      className: "bar-legend num"
-    }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", null, fmt(r.ytd)), r.month ? ' · this month ' + fmt(r.month) : ''), /*#__PURE__*/React.createElement("span", null, "Saved up ", fmt(r.accrued), " · year ", fmt(r.annual))));
-  })));
+  }, "No budgets yet")));
 }
 function BudgetDetail({
   M,
@@ -2231,7 +2034,7 @@ function ReportPage({
     className: "t1"
   }, "🎯 Budget"), /*#__PURE__*/React.createElement("div", {
     className: "small muted"
-  }, isYear ? `All budgets incl. yearly pots (${R.nLive} mo)` : 'Monthly budget · excl. yearly pots')), /*#__PURE__*/React.createElement("span", {
+  }, isYear ? `Sum of monthly budgets (${R.nLive} mo)` : 'Monthly budget')), /*#__PURE__*/React.createElement("span", {
     className: 'pill ' + (!R.budget ? 'n' : budLeft >= 0 ? 'g' : 'r')
   }, !R.budget ? 'No budget' : budLeft >= 0 ? 'Left ' + fmt(budLeft) : 'Over ' + fmt(-budLeft))), /*#__PURE__*/React.createElement(GoalBar, {
     value: R.budgetSpent,
@@ -2241,7 +2044,7 @@ function ReportPage({
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", null, fmt(R.budgetSpent))), /*#__PURE__*/React.createElement("span", null, "Budget ", fmt(R.budget)))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
-  }, isYear ? 'Income & expense by month' : 'Monthly spending vs budget pace'), /*#__PURE__*/React.createElement("div", {
+  }, isYear ? 'Income & expense by month' : 'Spending vs budget pace'), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "chart-box"
@@ -3401,9 +3204,7 @@ function EditBudgetsSheet({
   const raw = (sc, p) => draft[sc + '|' + p] != null ? draft[sc + '|' + p] : stored[sc][p] != null ? String(stored[sc][p]) : '';
   const num = (sc, p) => parseNum(raw(sc, p)) || 0;
   const eff = p => scope === 'month' && raw('month', p) !== '' ? num('month', p) : num('default', p);
-  const isPot = p => !!(M.catBy[p] && M.catBy[p].irregular);
-  const regular = sumBy(parents.filter(p => !isPot(p.name)), p => eff(p.name));
-  const pots = sumBy(parents.filter(p => isPot(p.name)), p => eff(p.name));
+  const total = sumBy(parents, p => eff(p.name));
   const avgAll = sumBy(parents, p => avgOf(p.name));
   const changes = Object.keys(draft).filter(k => {
     const [sc, p] = k.split('|');
@@ -3470,7 +3271,7 @@ function EditBudgetsSheet({
     className: "muted small"
   }, "Monthly budget", scope === 'month' ? ' · ' + ymLabel(ym) : ''), /*#__PURE__*/React.createElement("div", {
     className: "mid num"
-  }, fmt(regular))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(total))), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: 'right'
     }
@@ -3478,12 +3279,7 @@ function EditBudgetsSheet({
     className: "muted small"
   }, "Avg spent / month"), /*#__PURE__*/React.createElement("div", {
     className: "mid num muted"
-  }, fmt(avgAll)))), pots > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "small muted",
-    style: {
-      marginTop: 8
-    }
-  }, "+ ", fmt(pots), "/month into yearly pots (", fmt(pots * 12), "/year)"), scope === 'month' && /*#__PURE__*/React.createElement("div", {
+  }, fmt(avgAll)))), scope === 'month' && /*#__PURE__*/React.createElement("div", {
     className: "small muted",
     style: {
       marginTop: 8
@@ -3509,11 +3305,9 @@ function EditBudgetsSheet({
       className: "grow"
     }, /*#__PURE__*/React.createElement("div", {
       className: "t1 ellipsis"
-    }, pc.display, isPot(p) && /*#__PURE__*/React.createElement("span", {
-      className: "pill a potpill"
-    }, "yearly pot")), /*#__PURE__*/React.createElement("div", {
+    }, pc.display), /*#__PURE__*/React.createElement("div", {
       className: "t2 num ellipsis"
-    }, a ? 'Avg 3 mo ' + fmt(a) : 'No spending last 3 mo', scope === 'month' && usual ? ' · usual ' + fmt(usual) : '', isPot(p) && eff(p) ? ' · ' + fmt(eff(p) * 12) + '/yr' : ''), kids.length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, a ? 'Avg 3 mo ' + fmt(a) : 'No spending last 3 mo', scope === 'month' && usual ? ' · usual ' + fmt(usual) : ''), kids.length > 0 && /*#__PURE__*/React.createElement("div", {
       className: "t2 ellipsis",
       style: {
         opacity: .75
@@ -3957,7 +3751,7 @@ function CategoriesPage({
       className: "muted small"
     }, " · ", c.name) : null), /*#__PURE__*/React.createElement("div", {
       className: "t2"
-    }, [c.alias && 'alias: ' + c.alias, c.fixed && 'fixed bill', c.irregular && 'yearly pot', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
+    }, [c.alias && 'alias: ' + c.alias, c.fixed && 'fixed bill', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
       className: "chev"
     }, "›"));
   }))), /*#__PURE__*/React.createElement("button", {
@@ -4114,7 +3908,7 @@ function CategoryEdit({
   }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.name,
     value: p.name
-  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), f.type === 'expense' && !f.exclude && !f.parent && bool('irregular', 'Irregular — yearly pot (not every month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
 }
 
 // ===================================================================
