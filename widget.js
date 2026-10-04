@@ -247,7 +247,7 @@ async function openAdd(key, cat) {
   const wv = new WebView();
   await wv.loadURL(APP + "manifest.webmanifest");            // cùng origin với app → ghi được localStorage
   await wv.evaluateJavaScript("localStorage.setItem('exp_key', " + JSON.stringify(key) + "); true");
-  wv.loadURL(APP + "?add=1" + (cat ? "&cat=" + encodeURIComponent(cat) : "") + "&_=" + Date.now());
+  wv.loadURL(APP + "?add=1&embed=1" + (cat ? "&cat=" + encodeURIComponent(cat) : "") + "&_=" + Date.now());
   await wv.present(true);
 }
 

@@ -305,6 +305,28 @@ input, select, textarea { font: inherit; color: var(--text); }
 .calc-expr { display: block; font-size: 20px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
 .calc-res { display: block; }
 
+/* Màn nhập mở từ widget (embed): vừa 1 màn hình, bàn phím co giãn lấp phần còn lại */
+.qa { position: fixed; inset: 0; max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; background: var(--bg);
+  padding: calc(max(env(safe-area-inset-top), 20px) + 52px) 14px calc(max(env(safe-area-inset-bottom), 8px) + 6px); overflow: hidden; }
+.qa .typeseg { margin: 0; flex: none; }
+.qa .mlform { margin: 0; padding: 0 12px; flex: none; }
+.qa .mlrow { min-height: 46px; }
+.qa .mlrow.amt { min-height: 58px; }
+.qa .mlamt { font-size: 30px; }
+.qa .calc-expr { font-size: 15px; }
+.catchips.one { grid-template-rows: auto; padding: 6px 0 8px; }
+.qa-meta { display: flex; gap: 6px; align-items: center; flex: none; }
+.qa-meta .chip { padding: 7px 11px; font-size: 13px; }
+.chip.rel { position: relative; }
+.qa-err { flex: none; color: #FFB4AE; font-size: 13px; padding: 0 4px; }
+.qa-kp { flex: 1; min-height: 230px; grid-template-rows: repeat(5, 1fr); }
+.qa-kp button { height: auto; }
+.qa-kp button.ok { height: auto; }
+body.embed .toast { top: calc(max(env(safe-area-inset-top), 20px) + 54px); bottom: auto; }
+.qa-kp button { font-size: 24px; }
+.qa-kp button.op.calc { font-size: 28px; }
+.qa-kp button.ok { font-size: 19px; }
+
 </style>
 </head>
 <body>
@@ -2889,7 +2911,8 @@ function AddTxSheet({
   ctx,
   tx,
   quickMode,
-  onClose
+  onClose,
+  embed
 }) {
   const editing = !!(tx && tx.id);
   const pair = editing && isTransfer(tx) ? transferPair(M, tx) : null;
@@ -3063,6 +3086,134 @@ function AddTxSheet({
     key: w.name,
     value: w.name
   }, w.name))));
+  const keypad = cls => /*#__PURE__*/React.createElement("div", {
+    className: 'keypad num ' + (cls || ''),
+    style: {
+      marginTop: 0
+    }
+  }, ['C', '÷', '×', '⌫', '7', '8', '9', '−', '4', '5', '6', '+', '1', '2', '3'].map(k => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    className: 'C⌫÷×−+'.includes(k) ? 'op' + (CALC_OPS.includes(k) ? ' calc' : '') : '',
+    onClick: () => key(k)
+  }, k)), pendingCalc ? /*#__PURE__*/React.createElement("button", {
+    className: "ok",
+    onClick: equals
+  }, "=") : /*#__PURE__*/React.createElement("button", {
+    className: "ok",
+    onClick: save,
+    disabled: busy
+  }, busy ? '…' : ready ? 'Save' : '✓'), ['000', '0', '.'].map(k => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => key(k)
+  }, k)));
+  const amountRow = /*#__PURE__*/React.createElement("div", {
+    className: "mlrow amt focus"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "curbox"
+  }, "K"), /*#__PURE__*/React.createElement("span", {
+    className: "mlamt num",
+    style: {
+      color: amount ? amtColor : 'var(--muted)'
+    }
+  }, !amount ? '0' : pendingCalc ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "calc-expr"
+  }, fmtExpr(amount)), /*#__PURE__*/React.createElement("span", {
+    className: "calc-res"
+  }, "= ", amt != null ? fmt(amt) : '—')) : fmtExpr(amount)));
+
+  // Mở từ widget: 1 màn hình, không cuộn. Nút Close/Share của Scriptable nằm trên cùng → chừa chỗ, không có thanh tiêu đề riêng.
+  if (embed) {
+    const otherDate = date !== M.today && date !== yesterday;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "qa"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "typeseg three"
+    }, /*#__PURE__*/React.createElement("button", {
+      className: 'e' + (mode === 'expense' ? ' on' : ''),
+      onClick: () => switchMode('expense')
+    }, "Expense"), /*#__PURE__*/React.createElement("button", {
+      className: 'i' + (mode === 'income' ? ' on' : ''),
+      onClick: () => switchMode('income')
+    }, "Income"), /*#__PURE__*/React.createElement("button", {
+      className: 't' + (isT ? ' on' : ''),
+      onClick: () => switchMode('transfer')
+    }, "⇄ Transfer")), /*#__PURE__*/React.createElement("div", {
+      className: "mlform"
+    }, amountRow, isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      className: "mlrow",
+      onClick: () => setPicker(true)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, category ? M.icon(category) : '❔'), /*#__PURE__*/React.createElement("span", {
+      className: 'grow t1' + (category ? '' : ' muted')
+    }, category ? M.disp(category) : 'Select category', auto && /*#__PURE__*/React.createElement("span", {
+      className: "pill g",
+      style: {
+        marginLeft: 8,
+        fontSize: 11
+      }
+    }, "auto")), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›")), /*#__PURE__*/React.createElement("div", {
+      className: "catchips one"
+    }, chips.map(n => /*#__PURE__*/React.createElement("button", {
+      key: n,
+      className: category === n ? 'on' : '',
+      onClick: () => pick(n)
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "ci"
+    }, M.icon(n)), /*#__PURE__*/React.createElement("span", {
+      className: "ellipsis"
+    }, M.disp(n)))), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setPicker(true)
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "ci"
+    }, "⋯"), /*#__PURE__*/React.createElement("span", null, "More")))), /*#__PURE__*/React.createElement("div", {
+      className: "mlrow"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "ml-ic"
+    }, "≡"), /*#__PURE__*/React.createElement("input", {
+      className: "grow",
+      placeholder: "Write note",
+      value: note,
+      onChange: e => setNote(e.target.value)
+    }))), /*#__PURE__*/React.createElement("div", {
+      className: "qa-meta"
+    }, /*#__PURE__*/React.createElement("button", {
+      className: 'chip' + (date === M.today ? ' on' : ''),
+      onClick: () => setDate(M.today)
+    }, "Today"), /*#__PURE__*/React.createElement("button", {
+      className: 'chip' + (date === yesterday ? ' on' : ''),
+      onClick: () => setDate(yesterday)
+    }, "Yesterday"), /*#__PURE__*/React.createElement("label", {
+      className: 'chip rel' + (otherDate ? ' on' : '')
+    }, "📅 ", otherDate ? date.slice(8, 10) + '/' + date.slice(5, 7) : 'Date', /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      className: "ml-date",
+      value: date,
+      onChange: e => e.target.value && setDate(e.target.value)
+    })), !isT && wallets.length > 1 && /*#__PURE__*/React.createElement("label", {
+      className: "chip rel",
+      style: {
+        marginLeft: 'auto'
+      }
+    }, ((M.walletBy[wallet] || {}).icon || '👛') + ' ' + wallet, " ▾", /*#__PURE__*/React.createElement("select", {
+      className: "ml-date",
+      value: wallet,
+      onChange: e => setWallet(e.target.value)
+    }, wallets.map(w => /*#__PURE__*/React.createElement("option", {
+      key: w.name,
+      value: w.name
+    }, w.name))))), err && /*#__PURE__*/React.createElement("div", {
+      className: "qa-err"
+    }, "⚠️ ", err), keypad('qa-kp'), picker && /*#__PURE__*/React.createElement(CategorySelect, {
+      M: M,
+      type: isT ? 'expense' : mode,
+      value: category,
+      onClose: () => setPicker(false),
+      onPick: (n, t) => pick(n, t)
+    }));
+  }
   return /*#__PURE__*/React.createElement(Sheet, {
     title: editing ? pair ? 'Edit transfer' : 'Edit transaction' : 'Add transaction',
     onClose: onClose,
@@ -3210,26 +3361,7 @@ function AddTxSheet({
     key: 'a' + a,
     className: "chip num",
     onClick: () => setAmount(String(a))
-  }, fmt(a)))), /*#__PURE__*/React.createElement("div", {
-    className: "keypad num",
-    style: {
-      marginTop: 0
-    }
-  }, ['C', '÷', '×', '⌫', '7', '8', '9', '−', '4', '5', '6', '+', '1', '2', '3'].map(k => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    className: 'C⌫÷×−+'.includes(k) ? 'op' + (CALC_OPS.includes(k) ? ' calc' : '') : '',
-    onClick: () => key(k)
-  }, k)), pendingCalc ? /*#__PURE__*/React.createElement("button", {
-    className: "ok",
-    onClick: equals
-  }, "=") : /*#__PURE__*/React.createElement("button", {
-    className: "ok",
-    onClick: save,
-    disabled: busy
-  }, ready ? 'Save' : '✓'), ['000', '0', '.'].map(k => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    onClick: () => key(k)
-  }, k)))), picker && /*#__PURE__*/React.createElement(CategorySelect, {
+  }, fmt(a)))), keypad()), picker && /*#__PURE__*/React.createElement(CategorySelect, {
     M: M,
     type: isT ? 'expense' : mode,
     value: category,
@@ -4014,12 +4146,24 @@ const TABS = [{
   label: 'Account',
   icon: '👤'
 }];
+
+// Mở từ widget: ?add=1&embed=1[&cat=<nhóm>] → chỉ hiện màn nhập toàn màn hình (không thanh dưới, không trang phía sau).
+const URLQ = (() => {
+  try {
+    return new URLSearchParams(location.search);
+  } catch (e) {
+    return new Map();
+  }
+})();
+const EMBED = URLQ.get('embed') === '1';
+if (EMBED) document.body.classList.add('embed');
 function App() {
   const [boot, setBoot] = useState(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [tab, setTab] = useState('tx'); // mở app luôn vào Transactions (ví Cash)
   const [sheet, setSheet] = useState(null); // {kind:'tx', tx} | {kind:'budgets', ym, focus}
+  const [embedKey, setEmbedKey] = useState(0); // lưu xong → form trống để nhập khoản tiếp
   const [stack, setStack] = useState([]); // trang phủ: {kind:'budget'|'report'|'wallets'|'wallet', ...}; Back = bỏ trang trên cùng
   const overlay = stack[stack.length - 1] || null;
   const push = o => setStack(s => s.concat([o]));
@@ -4076,7 +4220,7 @@ function App() {
       if (cached) setError('');
     });
     // ?add=1 (từ widget): mở thẳng màn nhập; &cat=<tên nhóm> chọn sẵn nhóm.
-    readUrlParams().then(p => {
+    if (!EMBED) readUrlParams().then(p => {
       if (p.add === '1') setSheet({
         kind: 'tx',
         tx: p.cat ? {
@@ -4332,6 +4476,22 @@ function App() {
     }, /*#__PURE__*/React.createElement("span", {
       className: "spinner"
     }), " Loading…"));
+  }
+  if (EMBED) {
+    const cat = URLQ.get('cat');
+    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(AddTxSheet, {
+      key: embedKey,
+      embed: true,
+      M: M,
+      ctx: ctx,
+      tx: cat && embedKey === 0 ? {
+        type: 'expense',
+        category: cat
+      } : null,
+      onClose: () => setEmbedKey(k => k + 1)
+    }), /*#__PURE__*/React.createElement(Toast, {
+      toast: toast
+    }));
   }
   const page = tab === 'report' ? /*#__PURE__*/React.createElement(ReportPage, {
     key: "report",
