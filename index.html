@@ -299,6 +299,12 @@ input, select, textarea { font: inherit; color: var(--text); }
 .mini-seg button { padding: 5px 10px; border-radius: 7px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .mini-seg button.on { background: var(--green-bg); color: var(--green); }
 
+/* bàn phím có + − × ÷ */
+.keypad button.op.calc { color: var(--green); font-size: 22px; font-weight: 600; }
+.keypad button { height: 46px; }
+.calc-expr { display: block; font-size: 20px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+.calc-res { display: block; }
+
 </style>
 </head>
 <body>
@@ -354,6 +360,30 @@ const parseNum = s => {
   const n = Number(t);
   return isNaN(n) ? null : n;
 };
+
+// ---- máy tính trên bàn phím nhập tiền (như Money Lover) ----
+const CALC_OPS = '+−×÷';
+const hasOp = s => /[+−×÷]/.test(String(s || ''));
+/** Tính "35+20×2" (× ÷ trước, + − sau). Toán tử ở cuối bị bỏ qua. Sai/chia cho 0 → null. Không dùng eval. */
+function calcEval(expr) {
+  const s = String(expr || '').replace(/[+−×÷]+$/, '');
+  if (!s) return null;
+  const parts = s.split(/([+−×÷])/);
+  const terms = [parseFloat(parts[0])];
+  for (let i = 1; i < parts.length; i += 2) {
+    const op = parts[i],
+      n = parseFloat(parts[i + 1]);
+    if (isNaN(n)) return null;
+    const last = terms.length - 1;
+    if (op === '×') terms[last] *= n;else if (op === '÷') {
+      if (!n) return null;
+      terms[last] /= n;
+    } else terms.push(op === '−' ? -n : n);
+  }
+  if (terms.some(isNaN)) return null;
+  return Math.round(terms.reduce((a, b) => a + b, 0) * 100) / 100;
+}
+const fmtExpr = s => String(s || '').replace(/[\d.]+/g, n => fmtTyping(n)).replace(/([+−×÷])/g, ' $1 ');
 
 // ---- RPC ----
 const IS_SNAPSHOT = !!window.__SNAPSHOT__;
@@ -2884,7 +2914,8 @@ function AddTxSheet({
   const isT = mode === 'transfer';
   const top = useMemo(() => isT ? [] : suggestCategories(M, mode).slice(0, 10), [M, mode]);
   const chips = category && top.indexOf(category) < 0 ? [category].concat(top.slice(0, 9)) : top;
-  const amt = parseNum(amount);
+  const amt = calcEval(amount); // amount là biểu thức bàn phím: "35+20×2"
+  const pendingCalc = hasOp(amount);
   const ready = amt > 0 && (isT ? from && to && from !== to : !!category);
   const onQuick = v => {
     setQuick(v);
@@ -2902,10 +2933,18 @@ function AddTxSheet({
     setAmount(a => {
       if (k === '⌫') return a.slice(0, -1);
       if (k === 'C') return '';
-      if (k === '00' || k === '000') return a ? a + k : a;
-      if (a === '0') return k;
+      if (CALC_OPS.includes(k)) return !a ? a : /[+−×÷]$/.test(a) ? a.slice(0, -1) + k : a + k; // đổi toán tử nếu bấm liền 2 lần
+      const last = a.split(/[+−×÷]/).pop();
+      if (k === '.') return last.includes('.') ? a : a + (last ? '.' : '0.');
+      if (k === '000') return last && last !== '0' ? a + k : a;
+      if (last === '0') return a.slice(0, -1) + k;
       return a + k;
     });
+  };
+  const equals = () => {
+    const v = calcEval(amount);
+    setAmount(v != null && v > 0 ? String(v) : '');
+    if (!(v > 0)) setErr('Result must be > 0');
   };
   const save = () => {
     if (!(amt > 0)) {
@@ -3071,7 +3110,11 @@ function AddTxSheet({
     style: {
       color: amount ? amtColor : 'var(--muted)'
     }
-  }, amount ? fmt(amt) : '0')), isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, !amount ? '0' : pendingCalc ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "calc-expr"
+  }, fmtExpr(amount)), /*#__PURE__*/React.createElement("span", {
+    className: "calc-res"
+  }, "= ", amt != null ? fmt(amt) : '—')) : fmtExpr(amount))), isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "mlrow",
     onClick: () => {
       setKp(false);
@@ -3172,15 +3215,18 @@ function AddTxSheet({
     style: {
       marginTop: 0
     }
-  }, ['7', '8', '9', '⌫', '4', '5', '6', 'C', '1', '2', '3'].map(k => /*#__PURE__*/React.createElement("button", {
+  }, ['C', '÷', '×', '⌫', '7', '8', '9', '−', '4', '5', '6', '+', '1', '2', '3'].map(k => /*#__PURE__*/React.createElement("button", {
     key: k,
-    className: '⌫C'.includes(k) ? 'op' : '',
+    className: 'C⌫÷×−+'.includes(k) ? 'op' + (CALC_OPS.includes(k) ? ' calc' : '') : '',
     onClick: () => key(k)
-  }, k)), /*#__PURE__*/React.createElement("button", {
+  }, k)), pendingCalc ? /*#__PURE__*/React.createElement("button", {
+    className: "ok",
+    onClick: equals
+  }, "=") : /*#__PURE__*/React.createElement("button", {
     className: "ok",
     onClick: save,
     disabled: busy
-  }, ready ? 'Save' : '✓'), ['000', '0', '00'].map(k => /*#__PURE__*/React.createElement("button", {
+  }, ready ? 'Save' : '✓'), ['000', '0', '.'].map(k => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => key(k)
   }, k)))), picker && /*#__PURE__*/React.createElement(CategorySelect, {
