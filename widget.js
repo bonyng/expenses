@@ -1,6 +1,7 @@
 // Expenses widget for Scriptable (iOS) — Money Lover style. Unit: thousand VND.
 // First run inside Scriptable asks for the access key and stores it in the Keychain.
 // Sizes: Small = spent this month + budget bar + Add · Medium = + quick-add category buttons · Large = + top spending.
+// Tap → the app's own add screen (calculator keypad, categories) opens full screen inside Scriptable.
 const API = "https://script.google.com/macros/s/AKfycbxfGJti6JuILSU_NeaFb5ATQPU5L00tY8uenZQFFT7xtukQqA0fZhBnu2mZI5crjE16/exec";
 const APP = "https://bonyng.github.io/expenses/";
 const KC = "expenses_key";
@@ -31,7 +32,6 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 // Ảnh nền riêng: chọn từ thư viện ảnh khi chạy script trong Scriptable, lưu trong máy.
 const FM = FileManager.local();
 const BG_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_bg.jpg");
-const CATS_PATH = FM.joinPath(FM.documentsDirectory(), "expenses_cats.json");
 const HAS_PHOTO = FM.fileExists(BG_PATH);
 
 // Bảng màu: nền sáng/tối theo máy (như Money Lover); có ảnh nền thì chữ trắng.
@@ -171,7 +171,6 @@ async function build(fam) {
   const key = await getKey();
   let d = null;
   try { if (key) d = await call("widgetSummary", key); } catch (e) {}
-  if (d && d.__ok && d.cats && d.cats.length) FM.writeString(CATS_PATH, JSON.stringify(d.cats));
   if (!d || !d.__ok) {
     if (d && d.error === "Unauthorized" && Keychain.contains(KC)) Keychain.remove(KC);
     header(w, null);
@@ -242,49 +241,14 @@ async function build(fam) {
   return w;
 }
 
-// Bấm widget → nhập nhanh native (như Money Lover): số tiền (+ ghi chú) → nhóm → lưu. Không mở Safari.
-async function quickAdd(key, presetCat) {
-  let cats = [];
-  try { cats = JSON.parse(FM.readString(CATS_PATH)); } catch (e) {}
-  if (!cats.length) { try { const d = await call("widgetSummary", key); cats = (d && d.cats) || []; if (cats.length) FM.writeString(CATS_PATH, JSON.stringify(cats)); } catch (e) {} }
-  let preset = presetCat ? (cats.find(x => x.name === presetCat) || { name: presetCat, label: presetCat, icon: "" }) : null;
-  while (true) {
-    const a = new Alert();
-    a.title = preset ? (preset.icon ? preset.icon + "  " : "") + preset.label : "Add expense";
-    a.message = "Unit: thousand VND";
-    const amt = a.addTextField("Amount");
-    amt.setDecimalPadKeyboard();
-    a.addTextField("Note (optional)");
-    a.addAction(preset ? "Save" : "Next");
-    a.addCancelAction("Cancel");
-    if ((await a.present()) < 0) return;
-    const amount = Number(a.textFieldValue(0).replace(/,/g, "").trim());
-    const note = a.textFieldValue(1).trim();
-    if (!(amount > 0)) continue;
-    let category = preset ? preset.name : cats.length ? null : "Ăn uống";
-    if (!category) {
-      const c = new Alert();
-      c.title = fmt(amount) + (note ? " · " + note : "");
-      c.message = "Choose a category";
-      cats.forEach(x => c.addAction((x.icon ? x.icon + "  " : "") + x.label));
-      c.addCancelAction("Cancel");
-      const i = await c.presentSheet();
-      if (i < 0) return;
-      category = cats[i].name;
-    }
-    const dt = new Date(), pad = n => ("0" + n).slice(-2);
-    const date = dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate());
-    let res = null;
-    try { res = await call("saveTransaction", key, [{ date, type: "expense", category, amount, note, wallet: "Cash" }]); } catch (e) {}
-    const r = new Alert();
-    const label = (cats.find(x => x.name === category) || {}).label || category;
-    r.title = res && res.__ok ? "✓ Saved" : "Not saved";
-    r.message = res && res.__ok ? fmt(amount) + " · " + label : String((res && res.error) || "Network error");
-    r.addAction("Done");
-    r.addAction("Add another");
-    if ((await r.present()) !== 1) return;
-    preset = null;
-  }
+// Bấm widget → mở màn nhập của app (giống Money Lover: bàn phím + − × ÷, nhóm hay dùng, ví, ngày) ngay trong Scriptable.
+// Key được ghi vào localStorage của WebView trước khi mở app, nên không bị hỏi key.
+async function openAdd(key, cat) {
+  const wv = new WebView();
+  await wv.loadURL(APP + "manifest.webmanifest");            // cùng origin với app → ghi được localStorage
+  await wv.evaluateJavaScript("localStorage.setItem('exp_key', " + JSON.stringify(key) + "); true");
+  wv.loadURL(APP + "?add=1" + (cat ? "&cat=" + encodeURIComponent(cat) : "") + "&_=" + Date.now());
+  await wv.present(true);
 }
 
 async function menu() {
@@ -305,7 +269,7 @@ async function menu() {
 
 const qp = args.queryParameters || {};
 if (qp.action === "add" && Keychain.contains(KC)) {
-  await quickAdd(Keychain.get(KC), qp.cat || "");
+  await openAdd(Keychain.get(KC), qp.cat || "");
 } else if (config.runsInWidget) {
   Script.setWidget(await build());
 } else {

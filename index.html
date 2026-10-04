@@ -4075,11 +4075,15 @@ function App() {
     }).catch(() => {
       if (cached) setError('');
     });
+    // ?add=1 (từ widget): mở thẳng màn nhập; &cat=<tên nhóm> chọn sẵn nhóm.
     readUrlParams().then(p => {
       if (p.add === '1') setSheet({
         kind: 'tx',
-        tx: null,
-        quick: true
+        tx: p.cat ? {
+          type: 'expense',
+          category: p.cat
+        } : null,
+        quick: !p.cat
       });
     });
     const poll = () => rpc('getVersion').then(r => {
