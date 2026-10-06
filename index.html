@@ -676,7 +676,7 @@ function budgetTable(M, ym) {
     p.pendingAmt += t.amount;
   });
   const enrich = (o, fixed, pendingAmt) => {
-    const toDate = fixed ? o.target : o.target * prog.d / prog.D;
+    const toDate = o.target * prog.d / prog.D; // mọi nhóm (kể cả cố định) chia đều theo ngày, tính cả hôm nay
     const fc = forecastOf(o.spent, o.target, prog, fixed, pendingAmt);
     return Object.assign(o, {
       fixed,
@@ -735,10 +735,6 @@ function paceStatus(r, prog) {
   if (r.spent > r.target) return {
     cls: 'r',
     text: 'Over month +' + fmt(r.spent - r.target)
-  };
-  if (r.fixed) return {
-    cls: 'n',
-    text: 'Fixed bill · ' + fmtPct(r.spent / r.target)
   };
   if (!prog.isCurrent) return {
     cls: 'g',
@@ -1113,7 +1109,7 @@ function BudgetBar({
 }) {
   const max = Math.max(r.target, r.spent, r.forecast || 0) || 1;
   const pct = v => Math.min(100, v / max * 100) + '%';
-  const color = !r.target ? 'var(--muted)' : r.spent > r.target ? 'var(--red)' : !r.fixed && prog.isCurrent && r.diffToDate > 0 ? 'var(--red)' : prog.isCurrent && r.forecast > r.target ? 'var(--amber)' : 'var(--green)';
+  const color = !r.target ? 'var(--muted)' : r.spent > r.target ? 'var(--red)' : prog.isCurrent && r.diffToDate > 0 ? 'var(--red)' : prog.isCurrent && r.forecast > r.target ? 'var(--amber)' : 'var(--green)';
   return /*#__PURE__*/React.createElement("div", {
     className: "bar"
   }, prog.isCurrent && r.forecast > r.spent && /*#__PURE__*/React.createElement("div", {
@@ -1129,7 +1125,7 @@ function BudgetBar({
       width: pct(r.spent),
       background: color
     }
-  }), r.target > 0 && !r.fixed && prog.isCurrent && /*#__PURE__*/React.createElement("div", {
+  }), r.target > 0 && prog.isCurrent && /*#__PURE__*/React.createElement("div", {
     className: "tick",
     style: {
       left: pct(r.toDate)
@@ -1150,13 +1146,13 @@ function BudgetLegend({
   if (!full) return /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && r.spent > (r.fixed || !prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
+    className: r.target && r.spent > (!prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
   }, fmt(r.spent))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
   return /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && r.spent > (r.fixed || !prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
-  }, fmt(r.spent))), prog.isCurrent && !r.fixed && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+    className: r.target && r.spent > (!prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
+  }, fmt(r.spent))), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
 }
 
 // Vuốt trái 1 dòng → hiện nút Delete; chỉ 1 dòng mở cùng lúc.
@@ -1713,9 +1709,9 @@ function BudgetDetail({
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, r.fixed ? 'Fixed bill' : 'Target to date'), /*#__PURE__*/React.createElement("div", {
+  }, "Target to date"), /*#__PURE__*/React.createElement("div", {
     className: "v num"
-  }, r.fixed ? '—' : fmt(r.toDate))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(r.toDate))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
@@ -4218,7 +4214,7 @@ function CategoryEdit({
   }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.name,
     value: p.name
-  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (compare to full month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (forecast = full target)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
 }
 
 // ===================================================================
