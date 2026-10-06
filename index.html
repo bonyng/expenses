@@ -160,6 +160,10 @@ input, select, textarea { font: inherit; color: var(--text); }
 .item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
 .item:first-child { border-top: 0; }
 .item.tap:active { background: var(--card2); }
+.swipe { position: relative; overflow: hidden; border-top: 1px solid var(--line); }
+.swipe .item { border-top: 0; }
+.swipe-fg { position: relative; background: var(--card); touch-action: pan-y; }
+.swipe-del { position: absolute; top: 0; right: 0; bottom: 0; background: var(--red); color: #fff; border: 0; font-weight: 600; font-size: 15px; }
 .ic { width: 40px; height: 40px; border-radius: 50%; background: var(--card2); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: none; }
 .ic.sm { width: 32px; height: 32px; font-size: 16px; }
 .t1 { font-weight: 600; }
@@ -898,23 +902,16 @@ function predictByAmount(M, type, amount, now = new Date()) {
   const best = Object.keys(score).filter(c => M.catBy[c] && M.catBy[c].active !== false).sort((a, b) => score[b] - score[a])[0];
   return best && count[best] >= 2 && score[best] / total >= .5 ? best : null;
 }
-function suggestCategories(M, type, now = new Date()) {
-  const cutoff = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
-  const hour = now.getHours(),
-    dow = now.getDay();
-  const score = {};
+
+// Nhóm dùng gần nhất lên đầu: xếp theo giao dịch mới nhất của mỗi nhóm (ngày, rồi giờ tạo).
+function suggestCategories(M, type) {
+  const last = {};
   M.posted.forEach(t => {
-    if (t.type !== type || t.date < cutoff || M.excluded(t.category) || t.source === 'ml_report') return;
-    const age = (now - new Date(t.date)) / 864e5;
-    let s = Math.exp(-age / 45);
-    if (t.created_at && t.source === 'manual') {
-      const h = new Date(t.created_at).getHours();
-      if (Math.abs(h - hour) <= 2) s *= 2.5;
-    }
-    if (dowOf(t.date) === dow) s *= 1.3;
-    score[t.category] = (score[t.category] || 0) + s;
+    if (t.type !== type || M.excluded(t.category) || t.source === 'ml_report') return;
+    const k = t.date + '|' + (t.created_at || '');
+    if (!last[t.category] || k > last[t.category]) last[t.category] = k;
   });
-  return Object.keys(score).filter(c => M.catBy[c] && M.catBy[c].active !== false).sort((a, b) => score[b] - score[a]);
+  return Object.keys(last).filter(c => M.catBy[c] && M.catBy[c].active !== false).sort((a, b) => last[b] < last[a] ? -1 : last[b] > last[a] ? 1 : 0);
 }
 
 /**
@@ -1161,7 +1158,86 @@ function BudgetLegend({
     className: r.target && r.spent > (r.fixed || !prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
   }, fmt(r.spent))), prog.isCurrent && !r.fixed && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
 }
+
+// Vuốt trái 1 dòng → hiện nút Delete; chỉ 1 dòng mở cùng lúc.
+let closeOpenSwipe = null;
 function TxItem({
+  M,
+  t,
+  onClick,
+  onDelete
+}) {
+  const [dx, setDx] = useState(0);
+  const drag = useRef(null);
+  const canSwipe = !!onDelete && !String(t.id).startsWith('tmp');
+  const W = 88;
+  const close = () => setDx(0);
+  const onTS = e => {
+    if (!canSwipe) return;
+    const p = e.touches[0];
+    drag.current = {
+      x: p.clientX,
+      y: p.clientY,
+      base: dx,
+      h: null
+    };
+  };
+  const onTM = e => {
+    const d = drag.current;
+    if (!d) return;
+    const p = e.touches[0],
+      mx = p.clientX - d.x,
+      my = p.clientY - d.y;
+    if (d.h === null && (Math.abs(mx) > 8 || Math.abs(my) > 8)) d.h = Math.abs(mx) > Math.abs(my);
+    if (d.h) setDx(Math.max(-W - 20, Math.min(0, d.base + mx)));
+  };
+  const onTE = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d || !d.h) return;
+    setDx(x => {
+      const open = x < -W / 2;
+      if (open) {
+        if (closeOpenSwipe && closeOpenSwipe !== close) closeOpenSwipe();
+        closeOpenSwipe = close;
+      }
+      return open ? -W : 0;
+    });
+  };
+  const tap = () => {
+    if (dx) {
+      close();
+      return;
+    }
+    onClick();
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "swipe"
+  }, canSwipe && /*#__PURE__*/React.createElement("button", {
+    className: "swipe-del",
+    style: {
+      width: W
+    },
+    onClick: () => {
+      close();
+      onDelete(t);
+    }
+  }, "Delete"), /*#__PURE__*/React.createElement("div", {
+    className: "swipe-fg",
+    style: {
+      transform: dx ? 'translateX(' + dx + 'px)' : '',
+      transition: drag.current ? 'none' : 'transform .2s'
+    },
+    onTouchStart: onTS,
+    onTouchMove: onTM,
+    onTouchEnd: onTE
+  }, /*#__PURE__*/React.createElement(TxRow, {
+    M: M,
+    t: t,
+    onClick: tap
+  })));
+}
+function TxRow({
   M,
   t,
   onClick
@@ -1196,7 +1272,8 @@ function TxItem({
 function DayGroups({
   M,
   list,
-  onEdit
+  onEdit,
+  onDelete
 }) {
   const byDay = {};
   list.forEach(t => {
@@ -1229,7 +1306,8 @@ function DayGroups({
       key: t.id,
       M: M,
       t: t,
-      onClick: () => onEdit(t)
+      onClick: () => onEdit(t),
+      onDelete: onDelete
     })));
   });
 }
@@ -1435,7 +1513,8 @@ function TransactionsPage({
   }, list.length, " results · total ", fmtS(sumBy(list, signed))), /*#__PURE__*/React.createElement(DayGroups, {
     M: M,
     list: list,
-    onEdit: ctx.editTx
+    onEdit: ctx.editTx,
+    onDelete: ctx.deleteTxRow
   }));
 }
 
@@ -1700,7 +1779,8 @@ function BudgetDetail({
   }, "Transactions · ", list.length), /*#__PURE__*/React.createElement(DayGroups, {
     M: M,
     list: list,
-    onEdit: ctx.editTx
+    onEdit: ctx.editTx,
+    onDelete: ctx.deleteTxRow
   }));
 }
 
@@ -2267,7 +2347,8 @@ function CategoryDrill({
     }, fmt(sumBy(l, t => t.amount)))), /*#__PURE__*/React.createElement(DayGroups, {
       M: M,
       list: l,
-      onEdit: ctx.editTx
+      onEdit: ctx.editTx,
+      onDelete: ctx.deleteTxRow
     }));
   }
   return /*#__PURE__*/React.createElement(FullPage, {
@@ -2494,7 +2575,8 @@ function WalletDetail({
   }, fmt(balanceAt(M, ymAdd(ym, 1) + '-01', name))))), /*#__PURE__*/React.createElement(DayGroups, {
     M: M,
     list: list,
-    onEdit: ctx.editTx
+    onEdit: ctx.editTx,
+    onDelete: ctx.deleteTxRow
   }), edit && /*#__PURE__*/React.createElement(WalletEdit, {
     M: M,
     ctx: ctx,
@@ -2771,7 +2853,7 @@ function CategoryPicker({
     key: "__top"
   }, /*#__PURE__*/React.createElement("div", {
     className: "parent-lbl"
-  }, "Frequent"), /*#__PURE__*/React.createElement("div", {
+  }, "Recent"), /*#__PURE__*/React.createElement("div", {
     className: "catgrid"
   }, recent.map(n => /*#__PURE__*/React.createElement("button", {
     key: n,
@@ -2867,7 +2949,7 @@ function CategorySelect({
     autoCorrect: "off"
   })), !fq && top.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "parent-lbl"
-  }, "Frequent"), /*#__PURE__*/React.createElement("div", {
+  }, "Recent"), /*#__PURE__*/React.createElement("div", {
     className: "catgrid",
     style: {
       marginBottom: 6
@@ -4311,6 +4393,7 @@ function App() {
       kind: 'tx',
       tx: t
     }),
+    deleteTxRow: t => ctx.deleteTx(t.id),
     addTx: preset => setSheet({
       kind: 'tx',
       tx: preset || null
@@ -4376,15 +4459,23 @@ function App() {
       });
       return Promise.resolve();
     },
-    deleteTx: id => rpc('deleteTransaction', id).then(() => {
+    // Xoá: gỡ khỏi màn hình ngay, gửi lên ở nền; lỗi thì đưa lại và báo.
+    deleteTx: id => {
+      let gone = [];
       patchLocal(list => {
         const t = list.find(x => x.id === id),
           link = t && t.link_id;
-        return list.filter(x => x.id !== id && !(link && x.link_id === link));
+        const hit = x => x.id === id || link && x.link_id === link;
+        gone = list.filter(hit);
+        return list.filter(x => !hit(x));
       });
       say('Deleted');
-      load().catch(() => {});
-    }),
+      rpc('deleteTransaction', id).then(() => load().catch(() => {})).catch(e => {
+        if (gone.length) patchLocal(list => list.concat(gone));
+        say('⚠️ Not deleted: ' + String(e));
+      });
+      return Promise.resolve();
+    },
     // Chuyển tiền: hiện ngay 2 dòng (ra/vào), gửi lên ở nền.
     saveTransfer: p => {
       const tmp = p.link_id || 'tmpl_' + Date.now();
