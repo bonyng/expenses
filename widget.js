@@ -76,12 +76,11 @@ function barImage(width, ratio, marker, color) {
   return dc.getImage();
 }
 
-// Thanh ngân sách chỉ so phần chi đều hàng tháng (quỹ năm như du lịch, khám bệnh không làm lệch nhịp).
-const regular = d => d.spentReg != null ? d.spentReg : d.spentMTD;
+// Màu giống app: vượt cả tháng hoặc vượt nhịp tới hôm nay (target to date) → đỏ.
+const regular = d => d.spentMTD;
 function paceColor(d) {
   if (!d.budget) return GREEN;
-  if (regular(d) > d.budget) return RED;
-  if (regular(d) > d.budget * d.day / d.days) return AMBER;
+  if (regular(d) > d.budget * d.day / d.days) return RED;
   return GREEN;
 }
 

@@ -35,18 +35,24 @@
     if (k && k.trim()) { try { localStorage.setItem(KEY, k.trim()); } catch (e) {} location.reload(); }
   }
   var READ_ONLY = ['getBootstrap', 'getVersion', 'widgetSummary'];   // lệnh ghi không gọi lại (tránh lưu trùng)
-  // Lệnh ghi gửi lại nhiều lần vẫn cho cùng kết quả (sửa giao dịch có id, xoá) → được gọi lại như lệnh đọc.
+  // Lệnh ghi gửi lại nhiều lần vẫn cho cùng kết quả → được gọi lại như lệnh đọc:
+  // sửa/xoá theo id, thêm mới có id do app tạo (newId/newLink — server bỏ qua nếu đã có).
   function retryable(fn, args) {
+    var a = (args && args[0]) || {};
     if (READ_ONLY.indexOf(fn) >= 0 || fn === 'deleteTransaction') return true;
-    return fn === 'saveTransaction' && !!(args && args[0] && args[0].id);
+    if (fn === 'saveTransaction') return !!(a.id || a.newId);
+    return fn === 'saveTransfer' && !!(a.link_id || a.newLink);
   }
+  var TIMEOUT_MS = 90000;   // Google đôi khi treo ~70 giây; quá 90 giây thì coi là lỗi để app báo/gửi lại
   function call(fn, args, tries) {
     // GET ?q=: iOS Safari làm rơi thân POST khi đi qua redirect của Apps Script.
     // Google thỉnh thoảng trả trang lỗi HTML (404 ở bước echo) → tự gọi lại tối đa 2 lần.
     tries = tries || 0;
     var q = encodeURIComponent(JSON.stringify({ fn: fn, args: args, key: getKey() }));
-    return fetch(API + '?q=' + q + '&_=' + Date.now(), { redirect: 'follow', cache: 'no-store' })
-      .then(function (r) { return r.text(); })
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = ctl && setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+    return fetch(API + '?q=' + q + '&_=' + Date.now(), { redirect: 'follow', cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(timer); return r.text(); }, function (e) { clearTimeout(timer); throw (e && e.name === 'AbortError') ? new Error('No response after 90s') : e; })
       .then(function (t) {
         try { return JSON.parse(t); }
         catch (e) { throw new Error('Google server busy, please try again'); }   // trang lỗi HTML thay vì JSON
@@ -437,19 +443,35 @@ function rpc(fn, payload) {
   });
 }
 const BOOT_CACHE = 'exp_boot';
+/** Ngày hôm nay theo đồng hồ máy — không lấy từ server/cache (bản cache có thể từ hôm qua). */
+const localToday = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+};
 function readBootCache() {
   try {
     const b = JSON.parse(localStorage.getItem(BOOT_CACHE) || 'null');
-    if (!b || !b.tx) return null;
-    const d = new Date(),
-      today = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
-    return {
-      ...b,
-      today
-    }; // dữ liệu cũ nhưng ngày phải là hôm nay
+    return b && b.tx ? b : null;
   } catch (e) {
     return null;
   }
+}
+/** Id do app tạo cho giao dịch/cặp chuyển tiền mới → gửi lại không tạo trùng (server bỏ qua id đã có). */
+const newClientId = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Hàng chờ gửi (giao dịch mới chưa lưu xong): lưu trong máy để đóng app vẫn không mất, mở lại tự gửi tiếp.
+const OUTBOX = 'exp_outbox';
+function readOutbox() {
+  try {
+    const o = JSON.parse(localStorage.getItem(OUTBOX) || '[]');
+    return Array.isArray(o) ? o : [];
+  } catch (e) {
+    return [];
+  }
+}
+function writeOutbox(o) {
+  try {
+    localStorage.setItem(OUTBOX, JSON.stringify(o));
+  } catch (e) {/* đầy bộ nhớ: bỏ qua */}
 }
 function readUrlParams() {
   return new Promise(resolve => {
@@ -462,8 +484,12 @@ function readUrlParams() {
 }
 
 // ---- model ----
-function buildModel(boot) {
+/**
+ * today: ngày theo máy · outbox: giao dịch mới đang gửi/lỗi (hiện kèm, đánh dấu M.sync) · hidden: id đang xoá (ẩn ngay).
+ */
+function buildModel(boot, today, outbox, hidden) {
   const cols = boot.tx.cols;
+  const gone = hidden || new Set();
   const tx = boot.tx.rows.map(r => {
     const o = {};
     cols.forEach((c, i) => {
@@ -471,7 +497,19 @@ function buildModel(boot) {
     });
     o.amount = Number(o.amount) || 0;
     return o;
-  });
+  }).filter(t => !gone.has(t.id) && !(t.link_id && gone.has(t.link_id)));
+  const have = new Set(tx.map(t => t.id)),
+    sync = {},
+    syncKey = {};
+  (outbox || []).forEach(it => it.rows.forEach(r => {
+    if (have.has(r.id)) return;
+    tx.push({
+      ...r,
+      amount: Number(r.amount) || 0
+    });
+    sync[r.id] = it.state;
+    syncKey[r.id] = it.key;
+  }));
   const cats = boot.categories.filter(c => c.name);
   const catBy = {};
   cats.forEach(c => {
@@ -528,7 +566,8 @@ function buildModel(boot) {
   wallets.forEach(w => {
     walletBy[w.name] = w;
   });
-  const inTotal = new Set(wallets.filter(w => !w.exclude_total).map(w => w.name));
+  // Tổng số dư = ví đang dùng (không lưu trữ) và không bị loại khỏi tổng — mọi màn dùng chung tập này.
+  const inTotal = new Set(wallets.filter(w => !w.exclude_total && w.active !== false).map(w => w.name));
   const opening = sumBy(wallets.filter(w => inTotal.has(w.name)), w => w.opening_balance);
   return {
     boot,
@@ -547,8 +586,10 @@ function buildModel(boot) {
     wallets,
     walletBy,
     inTotal,
-    today: boot.today,
-    settings: boot.settings || {}
+    today: today || localToday(),
+    settings: boot.settings || {},
+    sync,
+    syncKey
   };
 }
 const DEFAULT_WALLET = 'Cash';
@@ -558,12 +599,23 @@ const CAT_TRANSFER_IN = 'Tiền chuyển đến';
 const signed = t => t.type === 'income' ? t.amount : -t.amount;
 const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
 const isTransfer = t => !!t.link_id;
-const ALL_WALLETS = '*';
-/** Ví có thuộc bộ lọc không: tên ví · ALL_WALLETS = mọi ví · '' = các ví tính vào tổng. */
-const inWallet = (M, wallet, name) => wallet === ALL_WALLETS ? true : wallet ? name === wallet : M.inTotal.has(name);
-/** Số dư trước ngày dateExclusive (không gồm ngày đó). wallet: xem inWallet. */
+/** Mục tiêu tiết kiệm (0–1); 0% hợp lệ, chỉ thiếu/sai mới dùng mặc định 45%. */
+const savingsTarget = M => {
+  const v = M.settings.savings_target;
+  const n = v === '' || v == null ? NaN : Number(v);
+  return isNaN(n) ? 0.45 : n;
+};
+const ALL_WALLETS = ''; // bộ lọc "Total" = các ví tính vào tổng (giống Account, My wallets)
+/** Ví có thuộc bộ lọc không: tên ví · '' = các ví tính vào tổng. */
+const inWallet = (M, wallet, name) => wallet ? name === wallet : M.inTotal.has(name);
+const nextDay = d => {
+  const x = new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10) + 1);
+  return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate());
+};
+/** Số dư trước ngày dateExclusive (không gồm ngày đó); bỏ trống = số dư hiện tại (tới hết hôm nay, chưa tính giao dịch đặt ngày tương lai). */
 function balanceAt(M, dateExclusive, wallet) {
-  const ok = t => inWallet(M, wallet, t.wallet) && (!dateExclusive || t.date < dateExclusive);
+  const lim = dateExclusive || nextDay(M.today);
+  const ok = t => inWallet(M, wallet, t.wallet) && t.date < lim;
   const open = sumBy(M.wallets.filter(w => inWallet(M, wallet, w.name)), w => w.opening_balance);
   return open + sumBy(M.posted.filter(ok), signed);
 }
@@ -771,7 +823,7 @@ function savingsView(M, ym) {
   const prev = [1, 2, 3].map(k => monthSummary(M, ymAdd(ym, -k)).income).filter(v => v > 0);
   const avgInc = prev.length ? sumBy(prev, v => v) / prev.length : 0;
   const expIncome = bt.prog.d >= bt.prog.D ? s.income : Math.max(s.income, avgInc);
-  const target = Number(M.settings.savings_target) || 0.45;
+  const target = savingsTarget(M);
   const fcSpend = Math.max(s.expense, bt.total.forecast);
   const fcSaved = expIncome - fcSpend;
   return {
@@ -850,7 +902,7 @@ function periodReport(M, period) {
     series,
     nLive: Math.max(1, live.length),
     savedPct: income > 0 ? (income - expense) / income : null,
-    target: Number(M.settings.savings_target) || 0.45
+    target: savingsTarget(M)
   };
 }
 /** Chi theo ngày trong tháng + đường ngân sách cộng dồn. */
@@ -1165,7 +1217,7 @@ function TxItem({
 }) {
   const [dx, setDx] = useState(0);
   const drag = useRef(null);
-  const canSwipe = !!onDelete && !String(t.id).startsWith('tmp');
+  const canSwipe = !!onDelete && M.sync[t.id] !== 'sending'; // đang gửi thì chưa cho xoá; lỗi thì xoá = bỏ khỏi hàng chờ
   const W = 88;
   const close = () => setDx(0);
   const onTS = e => {
@@ -1239,6 +1291,7 @@ function TxRow({
   onClick
 }) {
   const isP = t.status === 'pending';
+  const st = M.sync[t.id]; // 'sending' | 'failed' | undefined
   const parent = M.parentOf(t.category);
   const multi = M.wallets.length > 1;
   let title = M.disp(t.category),
@@ -1251,7 +1304,7 @@ function TxRow({
   }
   const sub = [t.note || (parent !== t.category ? M.disp(parent) : ''), multi && !isTransfer(t) ? t.wallet : '', isP ? 'pending' : ''].filter(Boolean).join(' · ');
   return /*#__PURE__*/React.createElement("div", {
-    className: 'item tap' + (isP ? ' pending' : ''),
+    className: 'item tap' + (isP || st ? ' pending' : ''),
     onClick: onClick
   }, /*#__PURE__*/React.createElement("div", {
     className: "ic"
@@ -1259,7 +1312,11 @@ function TxRow({
     className: "grow"
   }, /*#__PURE__*/React.createElement("div", {
     className: "t1 ellipsis"
-  }, title), /*#__PURE__*/React.createElement("div", {
+  }, title), st === 'failed' ? /*#__PURE__*/React.createElement("div", {
+    className: "t2 ellipsis red"
+  }, "⚠️ Not saved · tap to retry") : st === 'sending' ? /*#__PURE__*/React.createElement("div", {
+    className: "t2 ellipsis"
+  }, "Saving…") : /*#__PURE__*/React.createElement("div", {
     className: "t2 ellipsis"
   }, sub, isTransfer(t) ? (t.note ? ' · ' : '') + t.wallet : '')), /*#__PURE__*/React.createElement("div", {
     className: 'amt num ' + (t.type === 'income' ? 'blue' : 'red')
@@ -1418,15 +1475,15 @@ function TransactionsPage({
   const [ym, setYm] = ctx.ymState;
   const [q, setQ] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [wallet, setWallet] = ctx.walletState; // tên ví · ALL_WALLETS = cả các ví
+  const [wallet, setWallet] = ctx.walletState; // tên ví · ALL_WALLETS = các ví tính vào tổng
   const inW = t => inWallet(M, wallet, t.wallet);
   const list = useMemo(() => {
-    let l = monthTx(M, ym);
     if (q.trim()) {
+      // tìm kiếm: mọi tháng, mọi ví
       const f = fold(q);
-      l = M.posted.filter(t => fold(t.note).includes(f) || fold(t.category).includes(f) || fold(M.disp(t.category)).includes(f));
+      return M.posted.filter(t => fold(t.note).includes(f) || fold(t.category).includes(f) || fold(M.disp(t.category)).includes(f));
     }
-    return l.filter(inW);
+    return monthTx(M, ym).filter(inW);
   }, [M, ym, q, wallet]);
   const first = ym + '-01',
     next = ymAdd(ym, 1) + '-01';
@@ -1449,7 +1506,7 @@ function TransactionsPage({
     className: "sub"
   }, /*#__PURE__*/React.createElement("label", {
     className: "wsel"
-  }, /*#__PURE__*/React.createElement("span", null, w ? w.icon + ' ' + w.name : '🌐 All wallets', " ▾"), /*#__PURE__*/React.createElement("select", {
+  }, /*#__PURE__*/React.createElement("span", null, w ? w.icon + ' ' + w.name : '🌐 Total', " ▾"), /*#__PURE__*/React.createElement("select", {
     value: wallet,
     onChange: e => setWallet(e.target.value)
   }, M.wallets.filter(x => x.active !== false || x.name === wallet).map(x => /*#__PURE__*/React.createElement("option", {
@@ -1457,13 +1514,13 @@ function TransactionsPage({
     value: x.name
   }, x.name)), /*#__PURE__*/React.createElement("option", {
     value: ALL_WALLETS
-  }, "All wallets"))), /*#__PURE__*/React.createElement("span", {
+  }, "Total (wallets in total)"))), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), showSearch && /*#__PURE__*/React.createElement("div", {
     className: "search"
   }, /*#__PURE__*/React.createElement("span", null, "🔍"), /*#__PURE__*/React.createElement("input", {
     autoFocus: true,
-    placeholder: "Search note or category (all months)",
+    placeholder: "Search note or category (all months, all wallets)",
     value: q,
     onChange: e => setQ(e.target.value)
   }), q && /*#__PURE__*/React.createElement("button", {
@@ -2419,7 +2476,7 @@ function WalletsPage({
   const wb = walletBalances(M);
   const act = wb.filter(w => w.active !== false),
     arch = wb.filter(w => w.active === false);
-  const total = sumBy(act.filter(w => M.inTotal.has(w.name)), w => w.balance);
+  const total = sumBy(wb.filter(w => M.inTotal.has(w.name)), w => w.balance);
   const row = w => /*#__PURE__*/React.createElement("div", {
     className: "item tap",
     key: w.name,
@@ -3317,14 +3374,14 @@ function AddTxSheet({
       onClick: save
     }, "Save")
   }, !(editing && pair) && /*#__PURE__*/React.createElement("div", {
-    className: "typeseg three"
+    className: 'typeseg' + (editing ? '' : ' three')
   }, /*#__PURE__*/React.createElement("button", {
     className: 'e' + (mode === 'expense' ? ' on' : ''),
     onClick: () => switchMode('expense')
   }, "Expense"), /*#__PURE__*/React.createElement("button", {
     className: 'i' + (mode === 'income' ? ' on' : ''),
     onClick: () => switchMode('income')
-  }, "Income"), /*#__PURE__*/React.createElement("button", {
+  }, "Income"), !editing && /*#__PURE__*/React.createElement("button", {
     className: 't' + (isT ? ' on' : ''),
     onClick: () => switchMode('transfer')
   }, "⇄ Transfer")), !editing && quickMode && !isT && /*#__PURE__*/React.createElement("div", {
@@ -3482,7 +3539,6 @@ function EditBudgetsSheet({
   const [draft, setDraft] = useState({}); // 'default|parent' | 'month|parent' → chuỗi số
   const [busy, setBusy] = useState(false);
   const key = budgetMonthKey(ym);
-  const parents = M.cats.filter(c => c.type === 'expense' && !c.parent && !c.exclude && c.active !== false).sort((a, b) => a.sort - b.sort);
   const kidsOf = p => M.childrenOf[p] || [p];
   const stored = useMemo(() => {
     const o = {
@@ -3505,6 +3561,8 @@ function EditBudgetsSheet({
       leafs
     };
   }, [M, key]);
+  // Nhóm đã ẩn nhưng còn ngân sách vẫn được tính ở trang Budgets → hiện ở đây để sửa/xoá được.
+  const parents = M.cats.filter(c => c.type === 'expense' && !c.parent && !c.exclude && (c.active !== false || stored.default[c.name] || stored.month[c.name])).sort((a, b) => a.sort - b.sort);
   const avg = useMemo(() => avgSpend(M, 3), [M]);
   const avgOf = p => sumBy(kidsOf(p), c => avg[c] || 0);
   const raw = (sc, p) => draft[sc + '|' + p] != null ? draft[sc + '|' + p] : stored[sc][p] != null ? String(stored[sc][p]) : '';
@@ -3611,7 +3669,9 @@ function EditBudgetsSheet({
       className: "grow"
     }, /*#__PURE__*/React.createElement("div", {
       className: "t1 ellipsis"
-    }, pc.display), /*#__PURE__*/React.createElement("div", {
+    }, pc.display, pc.active === false && /*#__PURE__*/React.createElement("span", {
+      className: "muted small"
+    }, " · hidden")), /*#__PURE__*/React.createElement("div", {
       className: "t2 num ellipsis"
     }, a ? 'Avg 3 mo ' + fmt(a) : 'No spending last 3 mo', scope === 'month' && usual ? ' · usual ' + fmt(usual) : ''), kids.length > 0 && /*#__PURE__*/React.createElement("div", {
       className: "t2 ellipsis",
@@ -3647,7 +3707,7 @@ function AccountPage({
   ctx
 }) {
   const [sub, setSub] = useState('');
-  const [target, setTarget] = useState(Math.round((Number(M.settings.savings_target) || .45) * 100));
+  const [target, setTarget] = useState(Math.round(savingsTarget(M) * 100));
   const [qa, setQa] = useState(String(M.settings.quick_amounts || ''));
   const [hide, setHide] = useState(() => {
     try {
@@ -3663,10 +3723,19 @@ function AccountPage({
       localStorage.setItem('exp_hide', v ? '1' : '0');
     } catch (e) {/* ignore */}
   };
-  const saveSetting = (k, v) => rpc('saveSetting', {
+  // Chỉ lưu khi giá trị thật sự đổi (chạm rồi rời ô không ghi Sheet).
+  const saveSetting = (k, v) => String(v) === String(M.settings[k]) ? null : rpc('saveSetting', {
     key: k,
     value: v
   }).then(() => ctx.reload('Saved')).catch(ctx.fail);
+  const saveTarget = () => {
+    const n = parseNum(target);
+    if (n == null || n < 0 || n > 100) {
+      setTarget(Math.round(savingsTarget(M) * 100));
+      return;
+    } // ô trống/sai → trả về số cũ
+    saveSetting('savings_target', n / 100);
+  };
   const exportCsv = () => {
     try {
       const blob = new Blob([toCsv(M)], {
@@ -3687,19 +3756,6 @@ function AccountPage({
     ctx: ctx,
     onBack: () => setSub('')
   });
-  if (sub === 'help') return /*#__PURE__*/React.createElement(FullPage, {
-    title: "Help",
-    onBack: () => setSub('')
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "item tap",
-    onClick: () => setSub('help')
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "ic sm"
-  }, "❓"), /*#__PURE__*/React.createElement("span", {
-    className: "grow"
-  }, "Help"), /*#__PURE__*/React.createElement("span", {
-    className: "chev"
-  }, "›")));
   if (sub === 'categories') return /*#__PURE__*/React.createElement(CategoriesPage, {
     M: M,
     ctx: ctx,
@@ -3763,7 +3819,7 @@ function AccountPage({
     inputMode: "numeric",
     value: target,
     onChange: e => setTarget(e.target.value),
-    onBlur: () => saveSetting('savings_target', (parseNum(target) || 45) / 100)
+    onBlur: saveTarget
   }), "%"), /*#__PURE__*/React.createElement("div", {
     className: "item"
   }, /*#__PURE__*/React.createElement("span", {
@@ -3843,16 +3899,7 @@ function AccountPage({
     className: "ic sm"
   }, "🔄"), /*#__PURE__*/React.createElement("span", {
     className: "grow"
-  }, "Refresh data")), /*#__PURE__*/React.createElement("div", {
-    className: "item tap",
-    onClick: () => setSub('help')
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "ic sm"
-  }, "❓"), /*#__PURE__*/React.createElement("span", {
-    className: "grow"
-  }, "Help"), /*#__PURE__*/React.createElement("span", {
-    className: "chev"
-  }, "›"))));
+  }, "Refresh data"))));
 }
 function RecurringPage({
   M,
@@ -3891,7 +3938,7 @@ function RecurringPage({
     className: "t1"
   }, M.disp(r.category)), /*#__PURE__*/React.createElement("div", {
     className: "t2"
-  }, "Day ", r.day, " · ", r.note || '—', r.active ? '' : ' · paused')), /*#__PURE__*/React.createElement("div", {
+  }, "Day ", r.day, " · ", r.note || '—', r.active ? '' : ' · paused', r.active && r.start && r.start > ymOf(M.today) ? ' · from ' + ymShort(r.start) : '')), /*#__PURE__*/React.createElement("div", {
     className: "amt num"
   }, fmt(r.amount)))), !list.length && /*#__PURE__*/React.createElement("div", {
     className: "empty"
@@ -3915,10 +3962,23 @@ function RecurringEdit({
   const [picker, setPicker] = useState(!r.category);
   const [busy, setBusy] = useState(false);
   const save = () => {
+    // Tạo mới / bật lại khi ngày hạn tháng này đã qua mà tháng này chưa ghi → hỏi ghi luôn hay bắt đầu từ tháng sau.
+    const ym = ymOf(M.today),
+      day = Math.min(28, Math.max(1, Math.round(Number(f.day) || 1)));
+    const turningOn = f.active && (!r.id || !r.active);
+    const doneThisMonth = r.id && M.posted.some(t => t.recurring_id && t.recurring_id.split('@')[0] === r.id && (t.recurring_id.split('@')[1] || ymOf(t.date)) === ym);
+    let start;
+    if (turningOn && day <= +M.today.slice(8, 10) && !doneThisMonth) {
+      const now = confirm('Due day ' + day + ' has already come this month.\n\nOK = record this bill for ' + ymLabel(ym) + ' now\nCancel = start from ' + ymLabel(ymAdd(ym, 1)));
+      start = now ? '' : ymAdd(ym, 1);
+    }
     setBusy(true);
     rpc('saveRecurring', {
       ...f,
-      amount: parseNum(f.amount)
+      amount: parseNum(f.amount),
+      ...(start !== undefined ? {
+        start
+      } : {})
     }).then(() => ctx.reload('Saved')).then(onClose).catch(e => {
       ctx.fail(e);
       setBusy(false);
@@ -4262,56 +4322,105 @@ function App() {
   const push = o => setStack(s => s.concat([o]));
   const pop = () => setStack(s => s.slice(0, -1));
   const walletState = useState(DEFAULT_WALLET); // trang Giao dịch luôn mở ở ví Cash
-  const M = useMemo(() => boot ? buildModel(boot) : null, [boot]);
-  const ymState = useState(() => boot ? ymOf(boot.today) : null);
+  const [today, setToday] = useState(localToday); // theo đồng hồ máy, cập nhật khi qua đêm / mở lại app
+  const [outbox, setOutbox] = useState(readOutbox); // giao dịch mới chưa lưu xong: [{key, kind, payload, rows, state:'sending'|'failed'}]
+  const [hidden, setHidden] = useState(() => new Set()); // id / link_id đang xoá → ẩn ngay, kể cả khi bản tải về cũ còn chứa
+  const M = useMemo(() => boot ? buildModel(boot, today, outbox, hidden) : null, [boot, today, outbox, hidden]);
+  const ymState = useState(() => ymOf(localToday()));
   const [ym, setYm] = ymState;
   const versionRef = useRef(null);
-  const pendingRef = useRef({}); // tmp id → giao dịch chưa lưu xong
   const toastTimer = useRef(null);
-  const say = msg => {
+  const say = (msg, ms) => {
     setToast(msg);
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(''), 2200);
+    toastTimer.current = setTimeout(() => setToast(''), ms || 2200);
   };
   const fail = e => {
     say('⚠️ ' + String(e));
   };
+  const seen = v => {
+    if (v && (!versionRef.current || Number(v) > Number(versionRef.current))) versionRef.current = v;
+  };
   // Lưu bản dữ liệu gần nhất trong máy → mở app hiện ngay, tải bản mới ở nền (getBootstrap mất 5–10 giây).
   const load = useCallback(() => rpc('getBootstrap').then(b => {
-    versionRef.current = b.version;
     setError('');
+    // Phản hồi về muộn của lần tải cũ hơn lần ghi gần nhất → bỏ qua (tránh dòng vừa thêm biến mất / dòng vừa xoá hiện lại).
+    if (versionRef.current && Number(b.version) < Number(versionRef.current)) return b;
+    versionRef.current = b.version;
     try {
       localStorage.setItem(BOOT_CACHE, JSON.stringify(b));
     } catch (e) {/* đầy bộ nhớ: bỏ qua */}
-    // Giữ các giao dịch đang gửi dở để bản tải về sớm hơn không làm chúng biến mất.
-    const pend = Object.values(pendingRef.current);
-    setBoot(pend.length ? {
-      ...b,
-      tx: {
-        cols: b.tx.cols,
-        rows: b.tx.rows.concat(pend.map(o => b.tx.cols.map(c => o[c] == null ? '' : o[c])))
-      }
-    } : b);
+    setBoot(b);
+    // Server đã có → bỏ khỏi hàng chờ; id đang ẩn mà server không còn → xoá xong, bỏ ẩn.
+    const ci = b.tx.cols.indexOf('id'),
+      cl = b.tx.cols.indexOf('link_id'),
+      ids = new Set(),
+      links = new Set();
+    b.tx.rows.forEach(r => {
+      ids.add(r[ci]);
+      if (r[cl]) links.add(r[cl]);
+    });
+    setOutbox(o => {
+      const n = o.filter(it => it.kind === 'transfer' ? !links.has(it.key) : !ids.has(it.key));
+      return n.length === o.length ? o : n;
+    });
+    setHidden(h => {
+      if (!h.size) return h;
+      const n = new Set([...h].filter(x => ids.has(x) || links.has(x)));
+      return n.size === h.size ? h : n;
+    });
     return b;
   }).catch(e => {
-    setError(String(e));
+    if (!versionRef.current) setError(String(e));
     throw e;
-  }), []);
+  }), []); // đã có dữ liệu thì lỗi tải nền không hiện hộp đỏ
   const reload = msg => load().then(() => {
     if (msg) say(msg);
   });
+  useEffect(() => {
+    writeOutbox(outbox);
+  }, [outbox]);
+
+  // Gửi 1 mục trong hàng chờ. id do app tạo nên gửi lại bao nhiêu lần cũng không trùng.
+  const send = item => {
+    setOutbox(o => o.map(x => x.key === item.key ? {
+      ...x,
+      state: 'sending'
+    } : x));
+    return rpc(item.kind === 'transfer' ? 'saveTransfer' : 'saveTransaction', item.payload).then(res => {
+      seen(res.version);
+      const rows = item.kind === 'transfer' ? item.rows.map(r => ({
+        ...r,
+        link_id: res.link_id,
+        id: r.type === 'income' ? res.ids.in : res.ids.out
+      })) : item.rows;
+      patchLocal(list => {
+        const have = new Set(list.map(x => x.id));
+        return list.concat(rows.filter(r => !have.has(r.id)));
+      });
+      setOutbox(o => o.filter(x => x.key !== item.key));
+      say(item.kind === 'transfer' ? 'Transferred ' + fmt(item.payload.amount) + ' · ' + item.payload.from + ' → ' + item.payload.to : 'Saved ' + fmt(item.payload.amount));
+      load().catch(() => {});
+    }).catch(e => {
+      setOutbox(o => o.map(x => x.key === item.key ? {
+        ...x,
+        state: 'failed'
+      } : x));
+      say('⚠️ Not saved: ' + String(e) + ' — tap the row to retry', 6000);
+    });
+  };
+  const enqueue = item => {
+    setOutbox(o => o.concat([item]));
+    send(item);
+  };
   useEffect(() => {
     const cached = readBootCache();
     if (cached) {
       versionRef.current = cached.version;
       setBoot(cached);
-      setYm(ymOf(cached.today));
     }
-    load().then(b => {
-      if (!cached || ymOf(cached.today) !== ymOf(b.today)) setYm(ymOf(b.today));
-    }).catch(() => {
-      if (cached) setError('');
-    });
+    load().catch(() => {});
+    readOutbox().forEach(send); // còn giao dịch chưa lưu từ lần trước → gửi tiếp
     // ?add=1 (từ widget): mở thẳng màn nhập; &cat=<tên nhóm> chọn sẵn nhóm.
     if (!EMBED) readUrlParams().then(p => {
       if (p.add === '1') setSheet({
@@ -4327,12 +4436,23 @@ function App() {
       if (versionRef.current && r.version !== versionRef.current) load();
     }).catch(() => {});
     const iv = setInterval(poll, 5 * 60 * 1000);
+    // Qua đêm / mở lại app: cập nhật ngày; đang xem tháng của "hôm nay" cũ thì chuyển sang tháng mới.
+    const tick = () => setToday(prev => {
+      const t = localToday();
+      if (t !== prev) setYm(cur => cur === ymOf(prev) ? ymOf(t) : cur);
+      return t;
+    });
+    const it = setInterval(tick, 60 * 1000);
     const onVis = () => {
-      if (document.visibilityState === 'visible') poll();
+      if (document.visibilityState === 'visible') {
+        tick();
+        poll();
+      }
     };
     document.addEventListener('visibilitychange', onVis);
     return () => {
       clearInterval(iv);
+      clearInterval(it);
       document.removeEventListener('visibilitychange', onVis);
     };
   }, []);
@@ -4359,6 +4479,7 @@ function App() {
     };
   });
   const saveTxNow = t => rpc('saveTransaction', t).then(res => {
+    seen(res.version);
     patchLocal(list => {
       const rec = {
         ...t,
@@ -4392,10 +4513,26 @@ function App() {
     go: setTab,
     fail,
     reload,
-    editTx: t => setSheet({
-      kind: 'tx',
-      tx: t
-    }),
+    // Dòng đang gửi: chưa cho sửa · dòng lỗi: chạm = gửi lại.
+    editTx: t => {
+      const st = M && M.sync[t.id];
+      if (st === 'sending') {
+        say('Still saving…');
+        return;
+      }
+      if (st === 'failed') {
+        const it = outbox.find(x => x.key === M.syncKey[t.id]);
+        if (it) {
+          say('Retrying…');
+          send(it);
+        }
+        return;
+      }
+      setSheet({
+        kind: 'tx',
+        tx: t
+      });
+    },
     deleteTxRow: t => ctx.deleteTx(t.id),
     addTx: preset => setSheet({
       kind: 'tx',
@@ -4429,114 +4566,122 @@ function App() {
       ym,
       focus
     }),
-    // Thêm mới: đóng màn hình và hiện giao dịch ngay, gửi lên server ở nền; lỗi thì gỡ ra và báo.
+    // Thêm mới: đóng màn hình, hiện ngay, gửi ở nền qua hàng chờ (lỗi → dòng "Not saved", chạm để gửi lại; đóng app vẫn giữ).
     saveTx: t => {
       if (t.id) return saveTxNow(t);
-      const tmp = 'tmp_' + Date.now();
+      const id = newClientId('t');
       const row = {
         wallet: DEFAULT_WALLET,
         note: '',
         recurring_id: '',
         link_id: '',
         ...t,
-        id: tmp,
+        id,
         source: 'manual',
         status: 'posted',
         created_at: new Date().toISOString()
       };
-      pendingRef.current[tmp] = row;
-      patchLocal(list => list.concat([row]));
       say('Saving ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : '') + '…');
-      rpc('saveTransaction', t).then(res => {
-        delete pendingRef.current[tmp];
-        patchLocal(list => list.map(x => x.id === tmp ? {
-          ...x,
-          id: res.id
-        } : x));
-        say('Saved ' + fmt(t.amount) + ' · ' + (M ? M.disp(t.category) : ''));
+      enqueue({
+        key: id,
+        kind: 'tx',
+        payload: {
+          ...t,
+          newId: id
+        },
+        rows: [row],
+        state: 'sending'
+      });
+      return Promise.resolve();
+    },
+    // Xoá: ẩn ngay, gửi ở nền; lỗi thì hiện lại và báo. Dòng chưa lưu được thì chỉ bỏ khỏi hàng chờ.
+    deleteTx: id => {
+      if (M && M.sync[id]) {
+        const key = M.syncKey[id],
+          it = outbox.find(x => x.key === key);
+        setOutbox(o => o.filter(x => x.key !== key));
+        if (it && it.kind === 'tx') rpc('deleteTransaction', id).then(() => load().catch(() => {})).catch(() => {}); // phòng khi server thật ra đã lưu
+        say('Deleted');
+        return Promise.resolve();
+      }
+      const t = M && M.tx.find(x => x.id === id),
+        link = t && t.link_id;
+      const keys = link ? [id, link] : [id];
+      setHidden(h => new Set([...h, ...keys]));
+      say('Deleted');
+      rpc('deleteTransaction', id).then(res => {
+        seen(res.version);
         load().catch(() => {});
       }).catch(e => {
-        delete pendingRef.current[tmp];
-        patchLocal(list => list.filter(x => x.id !== tmp));
-        say('⚠️ Not saved: ' + String(e));
+        setHidden(h => {
+          const n = new Set(h);
+          keys.forEach(k => n.delete(k));
+          return n;
+        });
+        say('⚠️ Not deleted: ' + String(e), 4000);
       });
       return Promise.resolve();
     },
-    // Xoá: gỡ khỏi màn hình ngay, gửi lên ở nền; lỗi thì đưa lại và báo.
-    deleteTx: id => {
-      let gone = [];
-      patchLocal(list => {
-        const t = list.find(x => x.id === id),
-          link = t && t.link_id;
-        const hit = x => x.id === id || link && x.link_id === link;
-        gone = list.filter(hit);
-        return list.filter(x => !hit(x));
-      });
-      say('Deleted');
-      rpc('deleteTransaction', id).then(() => load().catch(() => {})).catch(e => {
-        if (gone.length) patchLocal(list => list.concat(gone));
-        say('⚠️ Not deleted: ' + String(e));
-      });
-      return Promise.resolve();
-    },
-    // Chuyển tiền: hiện ngay 2 dòng (ra/vào), gửi lên ở nền.
+    // Chuyển tiền mới: hiện ngay 2 dòng (ra/vào), gửi ở nền qua hàng chờ. Sửa cặp cũ: cập nhật ngay, gửi ở nền.
     saveTransfer: p => {
-      const tmp = p.link_id || 'tmpl_' + Date.now();
-      const base = {
-        amount: p.amount,
-        date: p.date,
-        note: p.note,
-        status: 'posted',
-        source: 'transfer',
-        recurring_id: '',
-        link_id: tmp,
-        created_at: new Date().toISOString()
-      };
-      const rows = [{
-        ...base,
-        id: tmp + '_o',
-        type: 'expense',
-        category: CAT_TRANSFER_OUT,
-        wallet: p.from
-      }, {
-        ...base,
-        id: tmp + '_i',
-        type: 'income',
-        category: CAT_TRANSFER_IN,
-        wallet: p.to
-      }];
-      patchLocal(list => p.link_id ? list.map(x => x.link_id === p.link_id ? {
+      if (!p.link_id) {
+        const link = newClientId('l');
+        const base = {
+          amount: p.amount,
+          date: p.date,
+          note: p.note,
+          status: 'posted',
+          source: 'transfer',
+          recurring_id: '',
+          link_id: link,
+          created_at: new Date().toISOString()
+        };
+        const rows = [{
+          ...base,
+          id: link + '_o',
+          type: 'expense',
+          category: CAT_TRANSFER_OUT,
+          wallet: p.from
+        }, {
+          ...base,
+          id: link + '_i',
+          type: 'income',
+          category: CAT_TRANSFER_IN,
+          wallet: p.to
+        }];
+        say('Saving transfer ' + fmt(p.amount) + '…');
+        enqueue({
+          key: link,
+          kind: 'transfer',
+          payload: {
+            ...p,
+            newLink: link
+          },
+          rows,
+          state: 'sending'
+        });
+        return Promise.resolve();
+      }
+      patchLocal(list => list.map(x => x.link_id === p.link_id ? {
         ...x,
         amount: p.amount,
         date: p.date,
         note: p.note,
         wallet: x.type === 'income' ? p.to : p.from
-      } : x) : list.concat(rows));
-      if (!p.link_id) rows.forEach(r => {
-        pendingRef.current[r.id] = r;
-      });
+      } : x));
       say('Saving transfer ' + fmt(p.amount) + '…');
       rpc('saveTransfer', p).then(res => {
-        rows.forEach(r => {
-          delete pendingRef.current[r.id];
-        });
-        if (!p.link_id) patchLocal(list => list.map(x => x.link_id === tmp ? {
-          ...x,
-          link_id: res.link_id,
-          id: x.type === 'income' ? res.ids.in : res.ids.out
-        } : x));
+        seen(res.version);
         say('Transferred ' + fmt(p.amount) + ' · ' + p.from + ' → ' + p.to);
         load().catch(() => {});
       }).catch(e => {
-        rows.forEach(r => {
-          delete pendingRef.current[r.id];
-        });
-        if (!p.link_id) patchLocal(list => list.filter(x => x.link_id !== tmp));else load().catch(() => {});
-        say('⚠️ Not saved: ' + String(e));
+        load().catch(() => {});
+        say('⚠️ Not saved: ' + String(e), 4000);
       });
       return Promise.resolve();
     },
     adjustBalance: p => rpc('adjustBalance', p).then(res => {
+      seen(res.version);
       if (res.id) patchLocal(list => list.concat([{
         id: res.id,
         date: p.date,
