@@ -1276,7 +1276,14 @@ function DayGroups({
   onDelete
 }) {
   const byDay = {};
-  list.forEach(t => {
+  // Trong 1 ngày: nhập sau nằm trên (created_at giảm dần; trùng giờ — vd. dữ liệu import — thì dòng sau trong Sheet lên trên).
+  list.map((t, i) => ({
+    t,
+    i,
+    c: String(t.created_at || '')
+  })).sort((a, b) => a.c < b.c ? 1 : a.c > b.c ? -1 : b.i - a.i).forEach(({
+    t
+  }) => {
     (byDay[t.date] = byDay[t.date] || []).push(t);
   });
   const days = Object.keys(byDay).sort().reverse();
