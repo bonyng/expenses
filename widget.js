@@ -101,11 +101,23 @@ function header(st, d) {
 }
 
 /** Khối chính: đã chi tháng này + thanh ngân sách + dòng còn lại. */
-function summary(st, d, width) {
+function summary(st, d, width, showDiff) {
   text(st, "Spent this month", 11, MUTED);
   st.addSpacer(1);
-  const v = text(st, fmt(d.spentMTD), 24, TEXT, "heavy");
+  const sr = st.addStack();
+  sr.bottomAlignContent();
+  const v = text(sr, fmt(d.spentMTD), 24, TEXT, "heavy");
   v.textColor = d.budget && regular(d) > d.budget ? RED : TEXT;
+  // Medium/Large: chênh lệch so với target to date (= budget × ngày/tổng ngày, giống trang Budgets). Dương = chi nhanh hơn nhịp.
+  if (showDiff && d.budget) {
+    const diff = regular(d) - d.budget * d.day / d.days;
+    sr.addSpacer(5);
+    const c = sr.addStack();
+    c.layoutVertically();
+    text(c, (diff > 0 ? "+" : "−") + fmt(Math.abs(diff)), 12, diff > 0 ? RED : GREEN, true);
+    text(c, "vs to date", 9, MUTED);
+    sr.addSpacer();
+  }
   st.addSpacer(5);
   const ratio = d.budget ? regular(d) / d.budget : 0;
   const img = st.addImage(barImage(width, ratio, d.budget ? d.day / d.days : 0, paceColor(d)));
@@ -196,7 +208,7 @@ async function build(fam) {
   left.size = new Size(134, 0);
   header(left, d);
   left.addSpacer(8);
-  summary(left, d, 134);
+  summary(left, d, 134, true);
   left.addSpacer();
   addButton(left, "＋ Add");
   body.addSpacer(14);
