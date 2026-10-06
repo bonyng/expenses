@@ -35,6 +35,11 @@
     if (k && k.trim()) { try { localStorage.setItem(KEY, k.trim()); } catch (e) {} location.reload(); }
   }
   var READ_ONLY = ['getBootstrap', 'getVersion', 'widgetSummary'];   // lệnh ghi không gọi lại (tránh lưu trùng)
+  // Lệnh ghi gửi lại nhiều lần vẫn cho cùng kết quả (sửa giao dịch có id, xoá) → được gọi lại như lệnh đọc.
+  function retryable(fn, args) {
+    if (READ_ONLY.indexOf(fn) >= 0 || fn === 'deleteTransaction') return true;
+    return fn === 'saveTransaction' && !!(args && args[0] && args[0].id);
+  }
   function call(fn, args, tries) {
     // GET ?q=: iOS Safari làm rơi thân POST khi đi qua redirect của Apps Script.
     // Google thỉnh thoảng trả trang lỗi HTML (404 ở bước echo) → tự gọi lại tối đa 2 lần.
@@ -42,9 +47,12 @@
     var q = encodeURIComponent(JSON.stringify({ fn: fn, args: args, key: getKey() }));
     return fetch(API + '?q=' + q + '&_=' + Date.now(), { redirect: 'follow', cache: 'no-store' })
       .then(function (r) { return r.text(); })
-      .then(function (t) { return JSON.parse(t); })
+      .then(function (t) {
+        try { return JSON.parse(t); }
+        catch (e) { throw new Error('Google server busy, please try again'); }   // trang lỗi HTML thay vì JSON
+      })
       .catch(function (e) {
-        if (tries < 2 && READ_ONLY.indexOf(fn) >= 0) return new Promise(function (ok) { setTimeout(ok, 800 * (tries + 1)); }).then(function () { return call(fn, args, tries + 1); });
+        if (tries < 2 && retryable(fn, args)) return new Promise(function (ok) { setTimeout(ok, 800 * (tries + 1)); }).then(function () { return call(fn, args, tries + 1); });
         throw e;
       });
   }
