@@ -345,6 +345,8 @@ body.embed .toast { top: calc(max(env(safe-area-inset-top), 20px) + 54px); botto
 .qa-kp button.op.calc { font-size: 28px; }
 .qa-kp button.ok { font-size: 19px; }
 
+.fixed-items { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+
 </style>
 </head>
 <body>
@@ -525,8 +527,8 @@ function buildModel(boot, today, outbox, hidden) {
     (childrenOf[p] = childrenOf[p] || []).push(c.name);
   });
   const excluded = name => !!(catBy[name] && catBy[name].exclude);
-  // Nhóm chia đều theo tháng (điện, Shopee…): cờ spread ở chính nhóm hoặc ở nhóm cha.
-  const isSpread = name => !!(catBy[name] && catBy[name].spread || catBy[parentOf(name)] && catBy[parentOf(name)].spread);
+  // Chi phí cố định = nhóm cha có cờ fixed (Hoá đơn & Tiện ích): không tính vào nhịp chi theo ngày / Today.
+  const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
   const disp = name => catBy[name] && catBy[name].display || name;
   const icon = name => catBy[name] && catBy[name].icon || '•';
   tx.forEach(t => {
@@ -580,7 +582,7 @@ function buildModel(boot, today, outbox, hidden) {
     parentOf,
     childrenOf,
     excluded,
-    isSpread,
+    isFixed,
     disp,
     icon,
     opening,
@@ -594,6 +596,7 @@ function buildModel(boot, today, outbox, hidden) {
   };
 }
 const DEFAULT_WALLET = 'Cash';
+const BUDGET_START = '2026-10'; // tháng đầu tiên có ngân sách (đặt 03/10/2026); đổi bằng setting budget_start
 const CAT_ADJUST = 'Điều chỉnh số dư';
 const CAT_TRANSFER_OUT = 'Tiền chuyển đi';
 const CAT_TRANSFER_IN = 'Tiền chuyển đến';
@@ -670,7 +673,7 @@ function monthProgress(M, ym) {
 /**
  * Dự báo chi cuối tháng cho phần chi linh hoạt (chi theo ngày thật).
  * Đầu tháng ít dữ liệu nên trộn nhịp thực tế với nhịp ngân sách: w = min(1, d/10).
- * Server (widgetSummary) dùng đúng công thức này — sửa thì sửa cả 2 nơi.
+ * Server (forecastOf_ trong Code.gs) dùng đúng công thức này — sửa thì sửa cả 2 nơi.
  */
 function forecastOf(spent, target, prog) {
   const {
@@ -683,54 +686,30 @@ function forecastOf(spent, target, prog) {
   const pace = w * (spent / d) + (1 - w) * ((target || 0) / D);
   return spent + pace * (D - d);
 }
+/** Chi phí cố định: tháng chưa hết → max(đã trả, target); hết tháng → số thật. */
+const fixedForecast = (spent, target, prog) => prog.d >= prog.D ? spent : Math.max(spent, target || 0);
 
 /**
- * Số tiền cả tháng của 1 nhóm chia đều: đã trả trong tháng → số thật; chưa trả → TB 3 tháng trước (tổng ÷ 3),
- * nhưng chỉ khi nhóm có chi ở ≥2/3 tháng đó (nhóm hiếm khi có như Du lịch: chưa trả = 0).
- * Server (spreadMonthAmount_) dùng đúng công thức này.
- */
-function spreadMonthAmount(actual, hist) {
-  if (actual > 0) return actual;
-  return hist.filter(v => v > 0).length >= 2 ? hist.reduce((a, b) => a + b, 0) / 3 : 0;
-}
-
-/**
- * Bảng ngân sách theo nhóm cha cho tháng ym.
- * Nhóm chia đều: "đã chi tính tới hôm nay" (counted) = số cả tháng × d/D thay cho số thật → so với target to date đúng nhịp.
- * spent vẫn là số đã chi thật để hiển thị.
+ * Bảng ngân sách theo nhóm cha cho tháng ym. Hai phần:
+ *  - Linh hoạt (mọi nhóm trừ cố định): target to date = target × d/D, Today, dự báo theo nhịp.
+ *  - Cố định (nhóm cha fixed, vd. Hoá đơn & Tiện ích): không chia theo ngày; đã trả / target; dự báo = max(đã trả, target).
+ * Server (budgetPace_ trong Code.gs) tính cùng các số tổng — sửa thì sửa cả 2 nơi.
  */
 function budgetTable(M, ym) {
   const prog = monthProgress(M, ym);
   const lb = leafBudget(M, ym);
   const exp = reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense');
-  const leafSpent = {},
-    leafBefore = {},
-    leafToday = {};
-  exp.forEach(t => {
-    leafSpent[t.category] = (leafSpent[t.category] || 0) + t.amount;
-    if (t.date < M.today) leafBefore[t.category] = (leafBefore[t.category] || 0) + t.amount;else if (t.date === M.today) leafToday[t.category] = (leafToday[t.category] || 0) + t.amount;
-  });
-  // Tháng đang chạy: nhóm chia đều chưa trả vẫn được ước tính theo 3 tháng trước.
-  const hist = {};
-  if (prog.isCurrent) {
-    [1, 2, 3].forEach((k, i) => reportable(M, monthTx(M, ymAdd(ym, -k))).forEach(t => {
-      if (t.type !== 'expense' || !M.isSpread(t.category)) return;
-      (hist[t.category] = hist[t.category] || [0, 0, 0])[i] += t.amount;
-    }));
-  }
   const parents = {};
   const blank = name => ({
     name,
     target: 0,
     spent: 0,
-    counted: 0,
-    spreadMonth: 0,
-    flexSpent: 0,
-    flexBefore: 0,
-    flexToday: 0
+    before: 0,
+    today: 0
   });
   const touch = p => parents[p] = parents[p] || {
     ...blank(p),
+    fixed: M.isFixed(p),
     children: {}
   };
   const child = (p, c) => p.children[c] = p.children[c] || blank(c);
@@ -740,67 +719,60 @@ function budgetTable(M, ym) {
     p.target += lb[c];
     child(p, c).target += lb[c];
   });
-  new Set(Object.keys(leafSpent).concat(Object.keys(hist))).forEach(c => {
-    const actual = leafSpent[c] || 0,
-      p = touch(M.parentOf(c)),
-      ch = child(p, c);
-    const add = o => Object.keys(o).forEach(k => {
-      p[k] += o[k];
-      ch[k] += o[k];
+  exp.forEach(t => {
+    const p = touch(M.parentOf(t.category)),
+      ch = child(p, t.category);
+    const k = t.date < M.today ? 'before' : t.date === M.today ? 'today' : null;
+    [p, ch].forEach(o => {
+      o.spent += t.amount;
+      if (k) o[k] += t.amount;
     });
-    if (M.isSpread(c)) {
-      const month = prog.isCurrent ? spreadMonthAmount(actual, hist[c] || [0, 0, 0]) : actual;
-      add({
-        spent: actual,
-        spreadMonth: month,
-        counted: month * prog.d / prog.D
-      });
-    } else {
-      add({
-        spent: actual,
-        counted: actual,
-        flexSpent: actual,
-        flexBefore: leafBefore[c] || 0,
-        flexToday: leafToday[c] || 0
-      });
-    }
   });
-  const enrich = o => {
-    const toDate = o.target * prog.d / prog.D; // mọi nhóm chia đều theo ngày, tính cả hôm nay
-    const forecast = o.spreadMonth + forecastOf(o.flexSpent, Math.max(0, o.target - o.spreadMonth), prog);
+  const enrich = (o, fixed) => {
+    const toDate = fixed ? o.target : o.target * prog.d / prog.D;
+    const forecast = fixed ? fixedForecast(o.spent, o.target, prog) : forecastOf(o.spent, o.target, prog);
     return Object.assign(o, {
+      fixed,
       toDate,
       forecast,
-      diffToDate: o.counted - toDate,
-      remaining: o.target - o.spent
+      diffToDate: fixed ? 0 : o.spent - toDate,
+      remaining: o.target - o.spent,
+      used: o.target ? o.spent / o.target : o.spent ? Infinity : 0
     });
   };
-  const rows = Object.values(parents).map(p => {
-    p.children = Object.values(p.children).filter(c => c.target || c.spent || c.spreadMonth).map(enrich).sort((a, b) => b.target - a.target || b.spent - a.spent);
-    return enrich(p);
-  }).filter(r => r.target || r.spent || r.spreadMonth).sort((a, b) => (b.target > 0) - (a.target > 0) || b.target - a.target || b.spent - a.spent);
-  const sum = k => sumBy(rows, r => r[k]);
+  const all = Object.values(parents).map(p => {
+    p.children = Object.values(p.children).map(c => enrich(c, p.fixed)).sort((a, b) => b.target - a.target || b.spent - a.spent);
+    return enrich(p, p.fixed);
+  }).filter(r => r.target || r.spent);
+  // Linh hoạt: nhóm đã chi xếp trước theo % ngân sách đã dùng; nhóm chưa chi để riêng (trang gộp thành 1 dòng).
+  const flex = all.filter(r => !r.fixed);
+  const rows = flex.filter(r => r.spent > 0).sort((a, b) => b.used - a.used || b.spent - a.spent);
+  const unused = flex.filter(r => !(r.spent > 0)).sort((a, b) => b.target - a.target);
+  const fixedRows = all.filter(r => r.fixed).sort((a, b) => b.target - a.target);
+  const sum = (list, k) => sumBy(list, r => r[k]);
   const T = {
-    target: sum('target'),
-    spent: sum('spent'),
-    counted: sum('counted'),
-    spreadMonth: sum('spreadMonth'),
-    flexSpent: sum('flexSpent'),
-    flexBefore: sum('flexBefore'),
-    flexToday: sum('flexToday')
+    target: sum(all, 'target'),
+    spent: sum(all, 'spent'),
+    flexTarget: sum(flex, 'target'),
+    flexSpent: sum(flex, 'spent'),
+    flexBefore: sum(flex, 'before'),
+    flexToday: sum(flex, 'today'),
+    fixedTarget: sum(fixedRows, 'target'),
+    fixedSpent: sum(fixedRows, 'spent')
   };
-  T.toDate = T.target * prog.d / prog.D;
-  // Dự báo tổng tính ở mức tổng (giống widget): khoản chia đều cả tháng + chi linh hoạt theo nhịp.
-  T.forecast = T.spreadMonth + forecastOf(T.flexSpent, Math.max(0, T.target - T.spreadMonth), prog);
+  T.toDate = T.flexTarget * prog.d / prog.D; // nhịp chỉ cho phần linh hoạt
+  T.forecast = forecastOf(T.flexSpent, T.flexTarget, prog) + sumBy(fixedRows, r => fixedForecast(r.spent, r.target, prog));
   T.remaining = T.target - T.spent;
-  // Hôm nay = (target − chi linh hoạt tới hôm qua − khoản chia đều cả tháng) ÷ số ngày còn lại tính cả hôm nay.
   if (prog.isCurrent) {
-    T.todayBudget = Math.max(0, T.target - T.flexBefore - T.spreadMonth) / (prog.D - prog.d + 1);
+    // Today = (target linh hoạt − chi linh hoạt tới hôm qua) ÷ số ngày còn lại tính cả hôm nay.
+    T.todayBudget = Math.max(0, T.flexTarget - T.flexBefore) / (prog.D - prog.d + 1);
     T.todayLeft = T.todayBudget - T.flexToday;
   }
   return {
     prog,
     rows,
+    unused,
+    fixedRows,
     total: T
   };
 }
@@ -817,7 +789,7 @@ function avgSpend(M, n = 3) {
   return out;
 }
 
-/** Status 1 dòng budget → {cls, text}. */
+/** Status 1 dòng budget → {cls, text}. Left = còn lại của cả tháng · Over pace = vượt nhịp tới hôm nay · Over month = vượt cả tháng. */
 function paceStatus(r, prog) {
   if (!r.target) return r.spent ? {
     cls: 'n',
@@ -828,23 +800,49 @@ function paceStatus(r, prog) {
   };
   if (r.spent > r.target) return {
     cls: 'r',
-    text: 'Over month +' + fmt(r.spent - r.target)
+    text: 'Over month ' + fmt(r.spent - r.target)
   };
-  if (!prog.isCurrent) return {
+  if (r.fixed) return r.spent > 0 ? {
     cls: 'g',
-    text: 'Under ' + fmt(r.target - r.spent)
+    text: 'Paid ' + fmt(r.spent)
+  } : {
+    cls: 'n',
+    text: 'Not paid'
   };
-  if (r.diffToDate > 0) return {
+  if (prog.isCurrent && r.diffToDate > 0) return {
     cls: 'r',
-    text: 'Over to date +' + fmt(r.diffToDate)
+    text: 'Over pace ' + fmt(r.diffToDate)
   };
-  if (r.forecast > r.target) return {
+  if (prog.isCurrent && r.forecast > r.target) return {
     cls: 'a',
-    text: 'Forecast over +' + fmt(r.forecast - r.target)
+    text: 'Forecast over ' + fmt(r.forecast - r.target)
   };
   return {
     cls: 'g',
-    text: 'Under −' + fmt(-r.diffToDate)
+    text: 'Left ' + fmt(r.target - r.spent)
+  };
+}
+/** Trạng thái tổng của tháng (trang Budgets, Report). */
+function totalStatus(T, prog) {
+  if (!T.target) return {
+    cls: 'n',
+    text: 'No budget'
+  };
+  if (T.spent > T.target) return {
+    cls: 'r',
+    text: 'Over budget'
+  };
+  if (prog.isCurrent && T.flexSpent > T.toDate) return {
+    cls: 'r',
+    text: 'Over pace'
+  };
+  if (prog.isCurrent && T.forecast > T.target) return {
+    cls: 'a',
+    text: 'Forecast over'
+  };
+  return {
+    cls: 'g',
+    text: 'On track'
   };
 }
 
@@ -887,14 +885,15 @@ function savingsView(M, ym) {
  * Báo cáo theo kỳ (tháng 'yyyy-MM' hoặc năm 'yyyy'): thu/chi/net, cơ cấu theo nhóm cha, số dư đầu/cuối,
  * ngân sách cộng dồn của kỳ (năm: chỉ cộng các tháng đã qua/đang chạy).
  */
-function periodReport(M, period) {
+function periodReport(M, period, until) {
   const isYear = period.length === 4;
   const months = isYear ? Array.from({
     length: 12
   }, (_, i) => period + '-' + pad2(i + 1)) : [period];
   const first = months[0] + '-01',
     next = ymAdd(months[months.length - 1], 1) + '-01';
-  const list = reportable(M, M.posted.filter(t => t.date >= first && t.date < next));
+  // until (yyyy-MM-dd): chỉ lấy tới ngày đó — để so "cùng số ngày" với kỳ đang chạy.
+  const list = reportable(M, M.posted.filter(t => t.date >= first && t.date < next && (!until || t.date <= until)));
   const by = {
     expense: {},
     income: {}
@@ -912,16 +911,27 @@ function periodReport(M, period) {
   const tym = ymOf(M.today);
   const live = months.filter(m => m <= tym); // tháng đã có số liệu
   const inBudget = c => !M.excluded(c);
-  const budgetOf = m => Object.entries(leafBudget(M, m)).filter(([c]) => inBudget(c)).reduce((s, [, v]) => s + v, 0);
-  const budget = sumBy(live, budgetOf);
-  const budgetSpent = sumBy(list.filter(t => t.type === 'expense' && inBudget(t.category)), t => t.amount);
+  // Ngân sách chỉ tính từ tháng bắt đầu đặt ngân sách (không áp ngược). Báo cáo năm: tháng đang chạy tính theo nhịp
+  // (linh hoạt × d/D, cố định đủ target) để so được với số đã chi tới hôm nay.
+  const bStart = String(M.settings.budget_start || BUDGET_START);
+  const bMonths = live.filter(m => m >= bStart);
+  const prog = monthProgress(M, tym);
+  const share = (m, c) => isYear && m === tym && !M.isFixed(c) ? prog.d / prog.D : 1;
   const byParentBudget = {};
-  live.forEach(m => Object.entries(leafBudget(M, m)).forEach(([c, v]) => {
+  bMonths.forEach(m => Object.entries(leafBudget(M, m)).forEach(([c, v]) => {
     if (inBudget(c)) {
       const p = M.parentOf(c);
-      byParentBudget[p] = (byParentBudget[p] || 0) + v;
+      byParentBudget[p] = (byParentBudget[p] || 0) + v * share(m, c);
     }
   }));
+  const budget = sumBy(Object.values(byParentBudget), v => v);
+  const inBudgetPeriod = list.filter(t => t.type === 'expense' && inBudget(t.category) && t.date.slice(0, 7) >= bStart);
+  const budgetSpent = sumBy(inBudgetPeriod, t => t.amount);
+  const byParentBudgetSpent = {}; // chi theo nhóm cha trong đúng các tháng có ngân sách (để so với byParentBudget)
+  inBudgetPeriod.forEach(t => {
+    const p = M.parentOf(t.category);
+    byParentBudgetSpent[p] = (byParentBudgetSpent[p] || 0) + t.amount;
+  });
   const series = months.map(m => ({
     m,
     ...monthSummary(M, m)
@@ -937,6 +947,9 @@ function periodReport(M, period) {
     budget,
     budgetSpent,
     byParentBudget,
+    byParentBudgetSpent,
+    bStart,
+    bMonths: bMonths.length,
     open: balanceAt(M, first),
     close: balanceAt(M, next > M.today ? null : next),
     expParts: parts('expense'),
@@ -1196,17 +1209,17 @@ function MonthSwitch({
   }, "›"));
 }
 
-/** Thanh tiến độ: fill = đã chi thật/target cả tháng; vạch trắng = target to date; vệt mờ = dự báo. Màu theo số đã chia đều (counted). */
+/** Thanh tiến độ: fill = đã chi/target cả tháng; vạch trắng = nhịp tới hôm nay (chỉ phần linh hoạt); vệt mờ = dự báo. */
 function BudgetBar({
   r,
   prog
 }) {
   const max = Math.max(r.target, r.spent, r.forecast || 0) || 1;
   const pct = v => Math.min(100, v / max * 100) + '%';
-  const color = !r.target ? 'var(--muted)' : r.spent > r.target ? 'var(--red)' : prog.isCurrent && r.diffToDate > 0 ? 'var(--red)' : prog.isCurrent && r.forecast > r.target ? 'var(--amber)' : 'var(--green)';
+  const color = !r.target ? 'var(--muted)' : r.spent > r.target ? 'var(--red)' : !r.fixed && prog.isCurrent && r.diffToDate > 0 ? 'var(--red)' : !r.fixed && prog.isCurrent && r.forecast > r.target ? 'var(--amber)' : 'var(--green)';
   return /*#__PURE__*/React.createElement("div", {
     className: "bar"
-  }, prog.isCurrent && r.forecast > r.spent && /*#__PURE__*/React.createElement("div", {
+  }, !r.fixed && prog.isCurrent && r.forecast > r.spent && /*#__PURE__*/React.createElement("div", {
     className: "fc",
     style: {
       left: 0,
@@ -1219,7 +1232,7 @@ function BudgetBar({
       width: pct(r.spent),
       background: color
     }
-  }), r.target > 0 && prog.isCurrent && /*#__PURE__*/React.createElement("div", {
+  }), r.target > 0 && !r.fixed && prog.isCurrent && /*#__PURE__*/React.createElement("div", {
     className: "tick",
     style: {
       left: pct(r.toDate)
@@ -1227,26 +1240,21 @@ function BudgetBar({
   }), r.target > 0 && /*#__PURE__*/React.createElement("div", {
     className: "tick",
     style: {
-      left: `calc(${pct(r.target)} - 2px)`,
+      left: 'calc(' + pct(r.target) + ' - 2px)',
       background: '#666'
     }
   }));
 }
 function BudgetLegend({
   r,
-  prog,
-  full
+  prog
 }) {
-  if (!full) return /*#__PURE__*/React.createElement("div", {
-    className: "bar-legend num"
-  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && (!prog.isCurrent ? r.spent > r.target : r.counted > r.toDate) ? 'red' : 'green'
-  }, fmt(r.spent)), prog.isCurrent && r.spreadMonth > 0 ? ' · spread' : ''), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+  const over = r.target && (!prog.isCurrent || r.fixed ? r.spent > r.target : r.spent > r.toDate);
   return /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && (!prog.isCurrent ? r.spent > r.target : r.counted > r.toDate) ? 'red' : 'green'
-  }, fmt(r.spent)), prog.isCurrent && r.spreadMonth > 0 ? ' · spread' : ''), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+    className: over ? 'red' : 'green'
+  }, fmt(r.spent)), prog.isCurrent && !r.fixed && r.target ? ' · pace ' + fmt(r.toDate) : ''), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
 }
 
 // Vuốt trái 1 dòng → hiện nút Delete; chỉ 1 dòng mở cùng lúc.
@@ -1621,32 +1629,92 @@ function TransactionsPage({
 }
 
 // ---------- Budgets ----------
+/** Khối chi phí cố định (Hoá đơn & Tiện ích): đã trả / target, từng khoản ✓ đã trả · ○ chưa trả. Không tính vào nhịp/Today. */
+function FixedCard({
+  M,
+  ctx,
+  rows,
+  prog,
+  ym
+}) {
+  if (!rows.length) return null;
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Fixed costs · not paced daily"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, rows.map(r => {
+    const s = paceStatus(r, prog);
+    const spentOf = n => (r.children.find(c => c.name === n) || {}).spent || 0;
+    const kids = (M.childrenOf[r.name] || [r.name]).filter(n => (n !== r.name || spentOf(n)) && (M.catBy[n].active !== false || spentOf(n)));
+    return /*#__PURE__*/React.createElement("div", {
+      className: "bud",
+      key: r.name,
+      onClick: () => ctx.openBudget(r.name, ym)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic"
+    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + s.cls
+    }, s.text), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›")), /*#__PURE__*/React.createElement(BudgetBar, {
+      r: r,
+      prog: prog
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "bar-legend num"
+    }, /*#__PURE__*/React.createElement("span", null, "Paid ", /*#__PURE__*/React.createElement("b", {
+      className: r.target && r.spent > r.target ? 'red' : 'green'
+    }, fmt(r.spent))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target))), /*#__PURE__*/React.createElement("div", {
+      className: "fixed-items small"
+    }, kids.map(n => /*#__PURE__*/React.createElement("span", {
+      key: n,
+      className: spentOf(n) ? 'green' : 'muted'
+    }, spentOf(n) ? '✓' : '○', " ", M.disp(n), spentOf(n) ? ' ' + fmt(spentOf(n)) : ''))));
+  })));
+}
 function BudgetsPage({
   M,
   ctx
 }) {
   const [ym, setYm] = ctx.ymState;
+  const [showUnused, setShowUnused] = useState(false);
   const bt = useMemo(() => budgetTable(M, ym), [M, ym]);
   const {
     prog,
     total: T
   } = bt;
   const sv = useMemo(() => prog.isCurrent ? savingsView(M, ym) : null, [M, ym]);
-  const st = !T.target ? {
-    cls: 'n',
-    text: 'No budget'
-  } : T.spent > T.target ? {
-    cls: 'r',
-    text: 'Over budget'
-  } : prog.isCurrent && T.counted > T.toDate ? {
-    cls: 'r',
-    text: 'Over to date'
-  } : prog.isCurrent && T.forecast > T.target ? {
-    cls: 'a',
-    text: 'Forecast over'
-  } : {
-    cls: 'g',
-    text: 'On track'
+  const st = totalStatus(T, prog);
+  const row = r => {
+    const s = paceStatus(r, prog);
+    return /*#__PURE__*/React.createElement("div", {
+      className: "bud",
+      key: r.name,
+      onClick: () => ctx.openBudget(r.name, ym)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic"
+    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
+      className: "t1 ellipsis"
+    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + s.cls
+    }, s.text), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, "›")), /*#__PURE__*/React.createElement(BudgetBar, {
+      r: r,
+      prog: prog
+    }), /*#__PURE__*/React.createElement(BudgetLegend, {
+      r: r,
+      prog: prog
+    }));
   };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "hdr"
@@ -1659,7 +1727,7 @@ function BudgetsPage({
     className: "sub"
   }, /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
     className: "dot"
-  }), prog.isCurrent ? `Day ${prog.d} of ${prog.D}` : prog.d ? 'Closed month' : 'Upcoming month', " · ", ymLabel(ym)), /*#__PURE__*/React.createElement("span", {
+  }), prog.isCurrent ? 'Day ' + prog.d + ' of ' + prog.D : prog.d ? 'Closed month' : 'Upcoming month', " · ", ymLabel(ym)), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL))), /*#__PURE__*/React.createElement(MonthSwitch, {
     ym: ym,
@@ -1685,23 +1753,23 @@ function BudgetsPage({
       letterSpacing: .8,
       fontWeight: 600
     }
-  }, "REMAINING"), /*#__PURE__*/React.createElement("div", {
-    className: "big num"
-  }, fmt(T.remaining))), /*#__PURE__*/React.createElement("span", {
+  }, prog.d ? 'REMAINING' : 'BUDGET'), /*#__PURE__*/React.createElement("div", {
+    className: 'big num' + (prog.d && T.remaining < 0 ? ' red' : '')
+  }, fmt(prog.d ? T.remaining : T.target))), /*#__PURE__*/React.createElement("span", {
     className: 'pill ' + st.cls
-  }, "● ", st.text)), /*#__PURE__*/React.createElement("div", {
+  }, "● ", st.text)), prog.isCurrent ? /*#__PURE__*/React.createElement("div", {
     className: "kgrid"
   }, /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, prog.isCurrent ? 'Spent to date (spread)' : 'Spent'), /*#__PURE__*/React.createElement("div", {
-    className: "v num"
-  }, fmt(prog.isCurrent ? T.counted : T.spent))), /*#__PURE__*/React.createElement("div", {
+  }, "Flexible spent"), /*#__PURE__*/React.createElement("div", {
+    className: 'v num' + (T.flexSpent > T.toDate ? ' red' : '')
+  }, fmt(T.flexSpent))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, /*#__PURE__*/React.createElement("span", null, "Target to date"), prog.isCurrent && /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, "Pace to date"), /*#__PURE__*/React.createElement("span", {
     className: "green"
   }, "Day ", prog.d)), /*#__PURE__*/React.createElement("div", {
     className: "v num"
@@ -1715,55 +1783,56 @@ function BudgetsPage({
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, prog.isCurrent ? 'Forecast' : 'Remaining'), /*#__PURE__*/React.createElement("div", {
-    className: 'v num ' + ((prog.isCurrent ? T.forecast > T.target : T.remaining < 0) ? 'red' : 'green')
-  }, prog.isCurrent ? fmt(T.forecast) : fmt(T.remaining)))), prog.isCurrent && /*#__PURE__*/React.createElement("div", {
-    className: "small muted num",
-    style: {
-      marginTop: 10
-    }
-  }, "Actual spent ", fmt(T.spent), " · Spread items ", fmt(T.spreadMonth), " / month (bills, Shopee… counted evenly per day)"), prog.isCurrent && sv && /*#__PURE__*/React.createElement("div", {
+  }, "Forecast"), /*#__PURE__*/React.createElement("div", {
+    className: 'v num ' + (T.forecast > T.target ? 'red' : 'green')
+  }, fmt(T.forecast)))) : /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Spent"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.spent))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Monthly target"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.target)))), prog.isCurrent && sv && sv.expIncome > 0 && /*#__PURE__*/React.createElement("div", {
     className: "between",
     style: {
       marginTop: 12
     }
   }, /*#__PURE__*/React.createElement("span", {
     className: "muted"
-  }, "Max spend for ", fmtPct(sv.target), " savings"), /*#__PURE__*/React.createElement("span", {
-    className: 'num ' + (sv.fcSpend > sv.spendLimit ? 'red' : 'green')
-  }, fmt(sv.spendLimit)))), /*#__PURE__*/React.createElement("div", {
+  }, "Savings forecast ", /*#__PURE__*/React.createElement("span", {
+    className: "small"
+  }, "(goal ", fmtPct(sv.target), ")")), /*#__PURE__*/React.createElement("span", {
+    className: 'num ' + (sv.fcPct >= sv.target ? 'green' : 'amber')
+  }, fmtPct(sv.fcPct)))), /*#__PURE__*/React.createElement(FixedCard, {
+    M: M,
+    ctx: ctx,
+    rows: bt.fixedRows,
+    prog: prog,
+    ym: ym
+  }), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
-  }, "Category budgets ", /*#__PURE__*/React.createElement("button", {
+  }, "Flexible spending ", /*#__PURE__*/React.createElement("button", {
     className: "link",
     onClick: () => ctx.editBudgets(ym)
   }, "✏️ Edit budgets")), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
-  }, bt.rows.map(r => {
-    const s = paceStatus(r, prog);
-    return /*#__PURE__*/React.createElement("div", {
-      className: "bud",
-      key: r.name,
-      onClick: () => ctx.openBudget(r.name, ym)
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "between"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "row grow"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "ic"
-    }, M.icon(r.name)), /*#__PURE__*/React.createElement("span", {
-      className: "t1 ellipsis"
-    }, M.disp(r.name))), /*#__PURE__*/React.createElement("span", {
-      className: 'pill ' + s.cls
-    }, s.text), /*#__PURE__*/React.createElement("span", {
-      className: "chev"
-    }, "›")), /*#__PURE__*/React.createElement(BudgetBar, {
-      r: r,
-      prog: prog
-    }), /*#__PURE__*/React.createElement(BudgetLegend, {
-      r: r,
-      prog: prog
-    }));
-  }), !bt.rows.length && /*#__PURE__*/React.createElement("div", {
+  }, bt.rows.map(row), bt.unused.length > 0 && (showUnused ? bt.unused.map(row) : /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setShowUnused(true)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow muted"
+  }, bt.unused.length, " categories not used yet"), /*#__PURE__*/React.createElement("span", {
+    className: "num muted"
+  }, fmt(sumBy(bt.unused, r => r.target))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))), !bt.rows.length && !bt.unused.length && /*#__PURE__*/React.createElement("div", {
     className: "empty"
   }, "No budgets yet")));
 }
@@ -1775,12 +1844,11 @@ function BudgetDetail({
   onBack
 }) {
   const bt = useMemo(() => budgetTable(M, ym), [M, ym]);
-  const r = bt.rows.find(x => x.name === parent) || {
+  const r = bt.rows.concat(bt.unused, bt.fixedRows).find(x => x.name === parent) || {
     name: parent,
+    fixed: M.isFixed(parent),
     target: 0,
     spent: 0,
-    counted: 0,
-    spreadMonth: 0,
     toDate: 0,
     forecast: 0,
     children: [],
@@ -1799,7 +1867,7 @@ function BudgetDetail({
     style: {
       margin: '4px 2px 12px'
     }
-  }, /*#__PURE__*/React.createElement("span", null, ymLabel(ym), prog.isCurrent ? ` · Day ${prog.d} of ${prog.D}` : ''), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, ymLabel(ym), prog.isCurrent ? ' · Day ' + prog.d + ' of ' + prog.D : '', r.fixed ? ' · fixed costs' : ''), /*#__PURE__*/React.createElement("span", {
     className: "unit"
   }, UNIT_LABEL)), /*#__PURE__*/React.createElement("div", {
     className: "card"
@@ -1819,15 +1887,15 @@ function BudgetDetail({
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, prog.isCurrent && r.spreadMonth ? 'Spent (spread)' : 'Spent MTD'), /*#__PURE__*/React.createElement("div", {
+  }, r.fixed ? 'Paid' : 'Spent'), /*#__PURE__*/React.createElement("div", {
     className: "v num"
-  }, fmt(prog.isCurrent ? r.counted : r.spent))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(r.spent))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, "Target to date"), /*#__PURE__*/React.createElement("div", {
+  }, r.fixed || !prog.isCurrent ? 'Left' : 'Pace to date'), /*#__PURE__*/React.createElement("div", {
     className: "v num"
-  }, fmt(r.toDate))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(r.fixed || !prog.isCurrent ? r.remaining : r.toDate))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
@@ -1842,12 +1910,7 @@ function BudgetDetail({
   }, fmt(r.forecast)))), /*#__PURE__*/React.createElement(BudgetBar, {
     r: r,
     prog: prog
-  }), prog.isCurrent && r.spreadMonth > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "small muted num",
-    style: {
-      marginTop: 8
-    }
-  }, "Actual spent ", fmt(r.spent), " · spread items ", fmt(r.spreadMonth), " / month, counted evenly per day")), r.children.length > 1 && r.children.every(c => c.name === parent || !c.target) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), r.children.length > 1 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
   }, "Sub-categories · one budget for the whole category"), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
@@ -1864,41 +1927,13 @@ function BudgetDetail({
     className: "t1 ellipsis"
   }, c.name === parent ? M.disp(parent) + ' (other)' : M.disp(c.name)), /*#__PURE__*/React.createElement("span", {
     className: "amt num"
-  }, fmt(c.spent))), /*#__PURE__*/React.createElement("div", {
+  }, r.fixed && !c.spent ? '○ not paid' : fmt(c.spent))), /*#__PURE__*/React.createElement("div", {
     className: "hbar"
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: (r.spent ? c.spent / r.spent * 100 : 0) + '%'
     }
-  }))))))), r.children.length > 0 && !(r.children.length > 1 && r.children.every(c => c.name === parent || !c.target)) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "sec-title"
-  }, "Sub-categories"), /*#__PURE__*/React.createElement("div", {
-    className: "card tight"
-  }, r.children.map(c => {
-    const cs = paceStatus(c, prog);
-    return /*#__PURE__*/React.createElement("div", {
-      className: "bud",
-      key: c.name,
-      onClick: () => ctx.editBudgets(ym, c.name)
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "between"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "row grow"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "ic sm"
-    }, M.icon(c.name)), /*#__PURE__*/React.createElement("span", {
-      className: "t1 ellipsis"
-    }, c.name === parent ? M.disp(parent) + ' (other)' : M.disp(c.name))), /*#__PURE__*/React.createElement("span", {
-      className: 'pill ' + cs.cls
-    }, cs.text)), /*#__PURE__*/React.createElement(BudgetBar, {
-      r: c,
-      prog: prog
-    }), /*#__PURE__*/React.createElement(BudgetLegend, {
-      r: c,
-      prog: prog,
-      full: true
-    }));
-  }))), /*#__PURE__*/React.createElement("div", {
+  }))))))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
   }, "Transactions · ", list.length), /*#__PURE__*/React.createElement(DayGroups, {
     M: M,
@@ -1981,7 +2016,9 @@ function Delta({
   goodWhenUp
 }) {
   const d = pctDelta(cur, prev);
-  if (d == null || !isFinite(d)) return null;
+  if (d == null || !isFinite(d)) return /*#__PURE__*/React.createElement("span", {
+    className: "small muted"
+  }, "—"); // kỳ trước không có số → không so được
   const up = d > 0,
     good = goodWhenUp ? up : !up;
   return /*#__PURE__*/React.createElement("span", {
@@ -2067,9 +2104,16 @@ function ReportPage({
   const isYear = period.length === 4;
   const R = useMemo(() => periodReport(M, period), [M, period]);
   const prevP = isYear ? String(+period - 1) : ymAdd(period, -1);
-  const P = useMemo(() => periodReport(M, prevP), [M, prevP]);
   const tym = ymOf(M.today);
   const running = isYear ? period === M.today.slice(0, 4) : period === tym;
+  // Kỳ đang chạy: so với kỳ trước CÙNG SỐ NGÀY (1–8/9 khi hôm nay 8/10), không so với cả kỳ trước.
+  const dd = +M.today.slice(8, 10);
+  const until = !running ? null : isYear ? prevP + M.today.slice(4) : prevP + '-' + pad2(Math.min(dd, daysIn(prevP)));
+  const cmpLabel = !running ? isYear ? prevP : ymShort(prevP) : isYear ? prevP + ' to ' + M.today.slice(8, 10) + '/' + M.today.slice(5, 7) : '1–' + Math.min(dd, daysIn(prevP)) + ' ' + MON3[+prevP.slice(5, 7) - 1];
+  const P = useMemo(() => periodReport(M, prevP, until), [M, prevP, until]);
+  // Tháng đang chạy: tiết kiệm theo dự đoán cuối tháng, ngân sách theo nhịp + dự đoán (cùng số với trang Budgets).
+  const sv = useMemo(() => running && !isYear ? savingsView(M, period) : null, [M, period, running]);
+  const bt = useMemo(() => running && !isYear ? budgetTable(M, period) : null, [M, period, running]);
   const setMode = y => {
     if (y === isYear) return;
     if (y) setPeriod(period.slice(0, 4));else setPeriod(period === tym.slice(0, 4) ? tym : period + '-12');
@@ -2252,7 +2296,7 @@ function ReportPage({
     className: "between"
   }, /*#__PURE__*/React.createElement("span", {
     className: "muted"
-  }, "Net income"), /*#__PURE__*/React.createElement(Delta, {
+  }, "Net income", running ? ' · so far' : ''), /*#__PURE__*/React.createElement(Delta, {
     cur: R.net,
     prev: P.net,
     goodWhenUp: true
@@ -2295,7 +2339,7 @@ function ReportPage({
     style: {
       marginTop: 10
     }
-  }, "vs ", isYear ? prevP : ymShort(prevP), ": income ", /*#__PURE__*/React.createElement(Delta, {
+  }, "vs ", cmpLabel, ": income ", /*#__PURE__*/React.createElement(Delta, {
     cur: R.income,
     prev: P.income,
     goodWhenUp: true
@@ -2311,7 +2355,23 @@ function ReportPage({
     className: "sec-title"
   }, "Goals"), /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, R.income > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, sv ? sv.expIncome > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, "🐷 Savings rate · forecast"), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, "Target ", fmtPct(sv.target), " · expected income ", fmt(sv.expIncome), sv.incomeIsEstimate ? ' (avg 3 mo)' : '')), /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + (sv.fcPct >= sv.target ? 'g' : 'a')
+  }, fmtPct(sv.fcPct), sv.fcPct >= sv.target ? ' ✓' : '')), /*#__PURE__*/React.createElement(GoalBar, {
+    value: Math.max(0, sv.fcSaved),
+    goal: sv.expIncome * sv.target,
+    color: sv.fcPct >= sv.target ? 'var(--green)' : 'var(--amber)'
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "bar-legend num"
+  }, /*#__PURE__*/React.createElement("span", null, "Saved (forecast) ", /*#__PURE__*/React.createElement("b", null, fmt(sv.fcSaved))), /*#__PURE__*/React.createElement("span", null, "Goal ", fmt(sv.expIncome * sv.target))), /*#__PURE__*/React.createElement("div", {
+    className: "divider"
+  })) : R.income > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "t1"
@@ -2327,21 +2387,39 @@ function ReportPage({
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Saved ", /*#__PURE__*/React.createElement("b", null, fmt(savedAmt))), /*#__PURE__*/React.createElement("span", null, "Goal ", fmt(goalAmt))), /*#__PURE__*/React.createElement("div", {
     className: "divider"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), bt ? (() => {
+    const T = bt.total,
+      st = totalStatus(T, bt.prog);
+    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      className: "between"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      className: "t1"
+    }, "🎯 Budget · forecast"), /*#__PURE__*/React.createElement("div", {
+      className: "small muted num"
+    }, "Flexible ", fmt(T.flexSpent), " vs pace ", fmt(T.toDate), " · fixed paid ", fmt(T.fixedSpent), " / ", fmt(T.fixedTarget))), /*#__PURE__*/React.createElement("span", {
+      className: 'pill ' + st.cls
+    }, st.text)), /*#__PURE__*/React.createElement(GoalBar, {
+      value: T.forecast,
+      goal: T.target,
+      color: T.forecast > T.target ? 'var(--red)' : 'var(--green)'
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "bar-legend num"
+    }, /*#__PURE__*/React.createElement("span", null, "Forecast ", /*#__PURE__*/React.createElement("b", null, fmt(T.forecast))), /*#__PURE__*/React.createElement("span", null, "Budget ", fmt(T.target))));
+  })() : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "between"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "t1"
   }, "🎯 Budget"), /*#__PURE__*/React.createElement("div", {
     className: "small muted"
-  }, isYear ? `Sum of monthly budgets (${R.nLive} mo)` : 'Monthly budget')), /*#__PURE__*/React.createElement("span", {
+  }, !R.budget ? 'No budget set for this period' : isYear ? 'Since ' + ymShort(R.bStart) + ' (' + R.bMonths + ' mo' + (running ? ', this month to date' : '') + ')' : 'Monthly budget')), /*#__PURE__*/React.createElement("span", {
     className: 'pill ' + (!R.budget ? 'n' : budLeft >= 0 ? 'g' : 'r')
-  }, !R.budget ? 'No budget' : budLeft >= 0 ? 'Left ' + fmt(budLeft) : 'Over ' + fmt(-budLeft))), /*#__PURE__*/React.createElement(GoalBar, {
+  }, !R.budget ? 'No budget' : budLeft >= 0 ? 'Left ' + fmt(budLeft) : 'Over ' + fmt(-budLeft))), R.budget > 0 && /*#__PURE__*/React.createElement(GoalBar, {
     value: R.budgetSpent,
     goal: R.budget,
     color: budLeft >= 0 ? 'var(--green)' : 'var(--red)'
-  }), /*#__PURE__*/React.createElement("div", {
+  }), R.budget > 0 && /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
-  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", null, fmt(R.budgetSpent))), /*#__PURE__*/React.createElement("span", null, "Budget ", fmt(R.budget)))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", null, fmt(R.budgetSpent))), /*#__PURE__*/React.createElement("span", null, "Budget ", fmt(R.budget))))), /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
   }, isYear ? 'Income & expense by month' : 'Spending vs budget pace'), /*#__PURE__*/React.createElement("div", {
     className: "card"
@@ -2396,9 +2474,12 @@ function ReportPage({
       }
     })), /*#__PURE__*/React.createElement("div", {
       className: "between t2"
-    }, /*#__PURE__*/React.createElement("span", null, fmtPct(p.v / tot), isYear ? ' · avg ' + fmt(p.v / R.nLive) + '/mo' : ''), /*#__PURE__*/React.createElement("span", null, b ? /*#__PURE__*/React.createElement("span", {
-      className: p.v > b ? 'red' : 'green'
-    }, fmt(p.v), " / ", fmt(b)) : /*#__PURE__*/React.createElement(Delta, {
+    }, /*#__PURE__*/React.createElement("span", null, fmtPct(p.v / tot), isYear ? ' · avg ' + fmt(p.v / R.nLive) + '/mo' : ''), /*#__PURE__*/React.createElement("span", null, b ? (() => {
+      const sp = R.byParentBudgetSpent[p.k] || 0;
+      return /*#__PURE__*/React.createElement("span", {
+        className: sp > b ? 'red' : 'green'
+      }, isYear ? 'since ' + ymShort(R.bStart) + ' ' : '', fmt(sp), " / ", fmt(b));
+    })() : /*#__PURE__*/React.createElement(Delta, {
       cur: p.v,
       prev: prevBy[p.k],
       goodWhenUp: type === 'income'
@@ -2417,7 +2498,7 @@ function ReportPage({
     className: "mtable tap",
     key: x.m,
     onClick: () => setPeriod(x.m)
-  }, /*#__PURE__*/React.createElement("span", null, MON3[+x.m.slice(5, 7) - 1]), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, MON3[+x.m.slice(5, 7) - 1], x.m === tym ? '*' : ''), /*#__PURE__*/React.createElement("span", {
     className: "num blue"
   }, fmt(x.income)), /*#__PURE__*/React.createElement("span", {
     className: "num red"
@@ -2425,7 +2506,7 @@ function ReportPage({
     className: 'num ' + (x.income && (x.income - x.expense) / x.income >= R.target ? 'green' : x.net < 0 ? 'red' : 'amber')
   }, x.income ? fmtPct((x.income - x.expense) / x.income) : '—'))))), /*#__PURE__*/React.createElement("div", {
     className: "foot-note"
-  }, UNIT_LABEL, " · transfers, investments, loans and balance adjustments are not counted as income/expense"));
+  }, isYear && running ? '* this month so far · ' : '', UNIT_LABEL, " · transfers, investments, loans and balance adjustments are not counted as income/expense"));
 }
 
 /**
@@ -4181,7 +4262,7 @@ function CategoriesPage({
       className: "muted small"
     }, " · ", c.name) : null), /*#__PURE__*/React.createElement("div", {
       className: "t2"
-    }, [c.alias && 'alias: ' + c.alias, c.spread && 'spread over month', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
+    }, [c.alias && 'alias: ' + c.alias, c.fixed && !c.parent && 'fixed costs', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
       className: "chev"
     }, "›"));
   }))), /*#__PURE__*/React.createElement("button", {
@@ -4338,7 +4419,7 @@ function CategoryEdit({
   }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.name,
     value: p.name
-  }, p.display)))), bool('spread', 'Spread over month (bills, Shopee… paid once a month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+  }, p.display)))), !f.parent && bool('fixed', 'Fixed costs (not paced daily)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
 }
 
 // ===================================================================

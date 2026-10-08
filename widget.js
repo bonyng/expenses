@@ -77,12 +77,12 @@ function barImage(width, ratio, marker, color) {
 }
 
 // Màu giống app: vượt cả tháng hoặc vượt nhịp tới hôm nay (target to date) → đỏ.
-// counted = đã chi tới hôm nay, nhóm chia đều (điện, Shopee…) tính số cả tháng × ngày/tổng ngày (server tính, giống trang Budgets).
+// Nhịp chỉ tính phần linh hoạt (không gồm chi phí cố định như Hoá đơn) — server tính, cùng số với trang Budgets.
 const regular = d => d.spentMTD;
-const counted = d => d.counted != null ? d.counted : d.spentMTD;
+const flexDiff = d => d.flexSpent != null ? d.flexSpent - d.paceToDate : d.spentMTD - d.budget * d.day / d.days;
 function paceColor(d) {
   if (!d.budget) return GREEN;
-  if (regular(d) > d.budget || counted(d) > d.budget * d.day / d.days) return RED;
+  if (regular(d) > d.budget || flexDiff(d) > 0) return RED;
   return GREEN;
 }
 
@@ -111,12 +111,12 @@ function summary(st, d, width, showDiff) {
   v.textColor = d.budget && regular(d) > d.budget ? RED : TEXT;
   // Medium/Large: chênh lệch so với target to date (= budget × ngày/tổng ngày, giống trang Budgets). Dương = chi nhanh hơn nhịp.
   if (showDiff && d.budget) {
-    const diff = counted(d) - d.budget * d.day / d.days;
+    const diff = flexDiff(d);
     sr.addSpacer(5);
     const c = sr.addStack();
     c.layoutVertically();
     text(c, (diff > 0 ? "+" : "−") + fmt(Math.abs(diff)), 12, diff > 0 ? RED : GREEN, true);
-    text(c, "vs to date", 9, MUTED);
+    text(c, "vs pace", 9, MUTED);
     sr.addSpacer();
   }
   st.addSpacer(5);
