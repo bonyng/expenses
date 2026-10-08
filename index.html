@@ -525,7 +525,8 @@ function buildModel(boot, today, outbox, hidden) {
     (childrenOf[p] = childrenOf[p] || []).push(c.name);
   });
   const excluded = name => !!(catBy[name] && catBy[name].exclude);
-  const isFixed = name => !!(catBy[parentOf(name)] && catBy[parentOf(name)].fixed);
+  // Nhóm chia đều theo tháng (điện, Shopee…): cờ spread ở chính nhóm hoặc ở nhóm cha.
+  const isSpread = name => !!(catBy[name] && catBy[name].spread || catBy[parentOf(name)] && catBy[parentOf(name)].spread);
   const disp = name => catBy[name] && catBy[name].display || name;
   const icon = name => catBy[name] && catBy[name].icon || '•';
   tx.forEach(t => {
@@ -579,7 +580,7 @@ function buildModel(boot, today, outbox, hidden) {
     parentOf,
     childrenOf,
     excluded,
-    isFixed,
+    isSpread,
     disp,
     icon,
     opening,
@@ -667,95 +668,136 @@ function monthProgress(M, ym) {
 }
 
 /**
- * Dự báo chi cuối tháng cho 1 khoản.
+ * Dự báo chi cuối tháng cho phần chi linh hoạt (chi theo ngày thật).
  * Đầu tháng ít dữ liệu nên trộn nhịp thực tế với nhịp ngân sách: w = min(1, d/10).
- * Nhóm hoá đơn cố định: max(đã chi + nháp định kỳ còn chờ, target).
+ * Server (widgetSummary) dùng đúng công thức này — sửa thì sửa cả 2 nơi.
  */
-function forecastOf(spent, target, prog, fixed, pendingAmt) {
+function forecastOf(spent, target, prog) {
   const {
     d,
     D
   } = prog;
   if (d >= D) return spent;
-  if (fixed) return Math.max(spent + (pendingAmt || 0), target || 0);
   if (d === 0) return Math.max(spent, target || 0);
   const w = Math.min(1, d / 10);
   const pace = w * (spent / d) + (1 - w) * ((target || 0) / D);
   return spent + pace * (D - d);
 }
 
-/** Bảng ngân sách theo nhóm cha cho tháng ym. */
+/**
+ * Số tiền cả tháng của 1 nhóm chia đều: đã trả trong tháng → số thật; chưa trả → TB 3 tháng trước (tổng ÷ 3),
+ * nhưng chỉ khi nhóm có chi ở ≥2/3 tháng đó (nhóm hiếm khi có như Du lịch: chưa trả = 0).
+ * Server (spreadMonthAmount_) dùng đúng công thức này.
+ */
+function spreadMonthAmount(actual, hist) {
+  if (actual > 0) return actual;
+  return hist.filter(v => v > 0).length >= 2 ? hist.reduce((a, b) => a + b, 0) / 3 : 0;
+}
+
+/**
+ * Bảng ngân sách theo nhóm cha cho tháng ym.
+ * Nhóm chia đều: "đã chi tính tới hôm nay" (counted) = số cả tháng × d/D thay cho số thật → so với target to date đúng nhịp.
+ * spent vẫn là số đã chi thật để hiển thị.
+ */
 function budgetTable(M, ym) {
   const prog = monthProgress(M, ym);
   const lb = leafBudget(M, ym);
   const exp = reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense');
-  const pend = M.pending.filter(t => t.date.startsWith(ym));
-  const leafSpent = {};
+  const leafSpent = {},
+    leafBefore = {},
+    leafToday = {};
   exp.forEach(t => {
     leafSpent[t.category] = (leafSpent[t.category] || 0) + t.amount;
+    if (t.date < M.today) leafBefore[t.category] = (leafBefore[t.category] || 0) + t.amount;else if (t.date === M.today) leafToday[t.category] = (leafToday[t.category] || 0) + t.amount;
   });
+  // Tháng đang chạy: nhóm chia đều chưa trả vẫn được ước tính theo 3 tháng trước.
+  const hist = {};
+  if (prog.isCurrent) {
+    [1, 2, 3].forEach((k, i) => reportable(M, monthTx(M, ymAdd(ym, -k))).forEach(t => {
+      if (t.type !== 'expense' || !M.isSpread(t.category)) return;
+      (hist[t.category] = hist[t.category] || [0, 0, 0])[i] += t.amount;
+    }));
+  }
   const parents = {};
-  const touch = p => parents[p] = parents[p] || {
-    name: p,
+  const blank = name => ({
+    name,
     target: 0,
     spent: 0,
-    children: {},
-    pendingAmt: 0
+    counted: 0,
+    spreadMonth: 0,
+    flexSpent: 0,
+    flexBefore: 0,
+    flexToday: 0
+  });
+  const touch = p => parents[p] = parents[p] || {
+    ...blank(p),
+    children: {}
   };
+  const child = (p, c) => p.children[c] = p.children[c] || blank(c);
   Object.keys(lb).forEach(c => {
     if (M.excluded(c)) return;
     const p = touch(M.parentOf(c));
     p.target += lb[c];
-    p.children[c] = p.children[c] || {
-      name: c,
-      target: 0,
-      spent: 0
-    };
-    p.children[c].target += lb[c];
+    child(p, c).target += lb[c];
   });
-  Object.keys(leafSpent).forEach(c => {
-    const p = touch(M.parentOf(c));
-    p.spent += leafSpent[c];
-    p.children[c] = p.children[c] || {
-      name: c,
-      target: 0,
-      spent: 0
-    };
-    p.children[c].spent += leafSpent[c];
+  new Set(Object.keys(leafSpent).concat(Object.keys(hist))).forEach(c => {
+    const actual = leafSpent[c] || 0,
+      p = touch(M.parentOf(c)),
+      ch = child(p, c);
+    const add = o => Object.keys(o).forEach(k => {
+      p[k] += o[k];
+      ch[k] += o[k];
+    });
+    if (M.isSpread(c)) {
+      const month = prog.isCurrent ? spreadMonthAmount(actual, hist[c] || [0, 0, 0]) : actual;
+      add({
+        spent: actual,
+        spreadMonth: month,
+        counted: month * prog.d / prog.D
+      });
+    } else {
+      add({
+        spent: actual,
+        counted: actual,
+        flexSpent: actual,
+        flexBefore: leafBefore[c] || 0,
+        flexToday: leafToday[c] || 0
+      });
+    }
   });
-  pend.forEach(t => {
-    const p = touch(M.parentOf(t.category));
-    p.pendingAmt += t.amount;
-  });
-  const enrich = (o, fixed, pendingAmt) => {
-    const toDate = o.target * prog.d / prog.D; // mọi nhóm (kể cả cố định) chia đều theo ngày, tính cả hôm nay
-    const fc = forecastOf(o.spent, o.target, prog, fixed, pendingAmt);
+  const enrich = o => {
+    const toDate = o.target * prog.d / prog.D; // mọi nhóm chia đều theo ngày, tính cả hôm nay
+    const forecast = o.spreadMonth + forecastOf(o.flexSpent, Math.max(0, o.target - o.spreadMonth), prog);
     return Object.assign(o, {
-      fixed,
       toDate,
-      forecast: fc,
-      diffToDate: o.spent - toDate,
+      forecast,
+      diffToDate: o.counted - toDate,
       remaining: o.target - o.spent
     });
   };
   const rows = Object.values(parents).map(p => {
-    const fixed = M.isFixed(p.name);
-    p.children = Object.values(p.children).map(c => enrich(c, fixed, 0)).sort((a, b) => b.target - a.target || b.spent - a.spent);
-    return enrich(p, fixed, p.pendingAmt);
-  }).sort((a, b) => (b.target > 0) - (a.target > 0) || b.target - a.target || b.spent - a.spent);
-  const T = rows.reduce((s, r) => ({
-    target: s.target + r.target,
-    spent: s.spent + r.spent,
-    toDate: s.toDate + r.toDate,
-    forecast: s.forecast + r.forecast
-  }), {
-    target: 0,
-    spent: 0,
-    toDate: 0,
-    forecast: 0
-  });
+    p.children = Object.values(p.children).filter(c => c.target || c.spent || c.spreadMonth).map(enrich).sort((a, b) => b.target - a.target || b.spent - a.spent);
+    return enrich(p);
+  }).filter(r => r.target || r.spent || r.spreadMonth).sort((a, b) => (b.target > 0) - (a.target > 0) || b.target - a.target || b.spent - a.spent);
+  const sum = k => sumBy(rows, r => r[k]);
+  const T = {
+    target: sum('target'),
+    spent: sum('spent'),
+    counted: sum('counted'),
+    spreadMonth: sum('spreadMonth'),
+    flexSpent: sum('flexSpent'),
+    flexBefore: sum('flexBefore'),
+    flexToday: sum('flexToday')
+  };
+  T.toDate = T.target * prog.d / prog.D;
+  // Dự báo tổng tính ở mức tổng (giống widget): khoản chia đều cả tháng + chi linh hoạt theo nhịp.
+  T.forecast = T.spreadMonth + forecastOf(T.flexSpent, Math.max(0, T.target - T.spreadMonth), prog);
   T.remaining = T.target - T.spent;
-  T.safePerDay = prog.left > 0 ? Math.max(0, T.remaining - sumBy(rows.filter(r => r.fixed), r => Math.max(0, r.target - r.spent))) / prog.left : null;
+  // Hôm nay = (target − chi linh hoạt tới hôm qua − khoản chia đều cả tháng) ÷ số ngày còn lại tính cả hôm nay.
+  if (prog.isCurrent) {
+    T.todayBudget = Math.max(0, T.target - T.flexBefore - T.spreadMonth) / (prog.D - prog.d + 1);
+    T.todayLeft = T.todayBudget - T.flexToday;
+  }
   return {
     prog,
     rows,
@@ -1154,7 +1196,7 @@ function MonthSwitch({
   }, "›"));
 }
 
-/** Thanh tiến độ: fill = đã chi/target cả tháng; vạch trắng = target to date; vệt mờ = dự báo. */
+/** Thanh tiến độ: fill = đã chi thật/target cả tháng; vạch trắng = target to date; vệt mờ = dự báo. Màu theo số đã chia đều (counted). */
 function BudgetBar({
   r,
   prog
@@ -1198,13 +1240,13 @@ function BudgetLegend({
   if (!full) return /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && r.spent > (!prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
-  }, fmt(r.spent))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+    className: r.target && (!prog.isCurrent ? r.spent > r.target : r.counted > r.toDate) ? 'red' : 'green'
+  }, fmt(r.spent)), prog.isCurrent && r.spreadMonth > 0 ? ' · spread' : ''), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
   return /*#__PURE__*/React.createElement("div", {
     className: "bar-legend num"
   }, /*#__PURE__*/React.createElement("span", null, "Spent ", /*#__PURE__*/React.createElement("b", {
-    className: r.target && r.spent > (!prog.isCurrent ? r.target : r.toDate) ? 'red' : 'green'
-  }, fmt(r.spent))), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
+    className: r.target && (!prog.isCurrent ? r.spent > r.target : r.counted > r.toDate) ? 'red' : 'green'
+  }, fmt(r.spent)), prog.isCurrent && r.spreadMonth > 0 ? ' · spread' : ''), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "To date ", fmt(r.toDate)), prog.isCurrent && /*#__PURE__*/React.createElement("span", null, "Fcst ", fmt(Math.round(r.forecast))), /*#__PURE__*/React.createElement("span", null, "Month ", fmt(r.target)));
 }
 
 // Vuốt trái 1 dòng → hiện nút Delete; chỉ 1 dòng mở cùng lúc.
@@ -1596,7 +1638,7 @@ function BudgetsPage({
   } : T.spent > T.target ? {
     cls: 'r',
     text: 'Over budget'
-  } : prog.isCurrent && T.spent > T.toDate ? {
+  } : prog.isCurrent && T.counted > T.toDate ? {
     cls: 'r',
     text: 'Over to date'
   } : prog.isCurrent && T.forecast > T.target ? {
@@ -1627,15 +1669,25 @@ function BudgetsPage({
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "between"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, prog.isCurrent ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "muted small",
     style: {
       letterSpacing: .8,
       fontWeight: 600
     }
-  }, prog.isCurrent ? 'SAFE TO SPEND / DAY' : 'REMAINING'), /*#__PURE__*/React.createElement("div", {
+  }, "TODAY · LEFT TO SPEND"), /*#__PURE__*/React.createElement("div", {
+    className: 'big num' + (T.todayLeft < 0 ? ' red' : '')
+  }, fmt(T.todayLeft)), /*#__PURE__*/React.createElement("div", {
+    className: "small muted num"
+  }, "of ", fmt(T.todayBudget), " today · spent ", fmt(T.flexToday))) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      letterSpacing: .8,
+      fontWeight: 600
+    }
+  }, "REMAINING"), /*#__PURE__*/React.createElement("div", {
     className: "big num"
-  }, prog.isCurrent ? fmt(T.safePerDay) : fmt(T.remaining))), /*#__PURE__*/React.createElement("span", {
+  }, fmt(T.remaining))), /*#__PURE__*/React.createElement("span", {
     className: 'pill ' + st.cls
   }, "● ", st.text)), /*#__PURE__*/React.createElement("div", {
     className: "kgrid"
@@ -1643,9 +1695,9 @@ function BudgetsPage({
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, "Spent to date"), /*#__PURE__*/React.createElement("div", {
+  }, prog.isCurrent ? 'Spent to date (spread)' : 'Spent'), /*#__PURE__*/React.createElement("div", {
     className: "v num"
-  }, fmt(T.spent))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(prog.isCurrent ? T.counted : T.spent))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
@@ -1665,7 +1717,12 @@ function BudgetsPage({
     className: "k"
   }, prog.isCurrent ? 'Forecast' : 'Remaining'), /*#__PURE__*/React.createElement("div", {
     className: 'v num ' + ((prog.isCurrent ? T.forecast > T.target : T.remaining < 0) ? 'red' : 'green')
-  }, prog.isCurrent ? fmt(T.forecast) : fmt(T.remaining)))), prog.isCurrent && sv && /*#__PURE__*/React.createElement("div", {
+  }, prog.isCurrent ? fmt(T.forecast) : fmt(T.remaining)))), prog.isCurrent && /*#__PURE__*/React.createElement("div", {
+    className: "small muted num",
+    style: {
+      marginTop: 10
+    }
+  }, "Actual spent ", fmt(T.spent), " · Spread items ", fmt(T.spreadMonth), " / month (bills, Shopee… counted evenly per day)"), prog.isCurrent && sv && /*#__PURE__*/React.createElement("div", {
     className: "between",
     style: {
       marginTop: 12
@@ -1722,6 +1779,8 @@ function BudgetDetail({
     name: parent,
     target: 0,
     spent: 0,
+    counted: 0,
+    spreadMonth: 0,
     toDate: 0,
     forecast: 0,
     children: [],
@@ -1760,9 +1819,9 @@ function BudgetDetail({
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
-  }, "Spent MTD"), /*#__PURE__*/React.createElement("div", {
+  }, prog.isCurrent && r.spreadMonth ? 'Spent (spread)' : 'Spent MTD'), /*#__PURE__*/React.createElement("div", {
     className: "v num"
-  }, fmt(r.spent))), /*#__PURE__*/React.createElement("div", {
+  }, fmt(prog.isCurrent ? r.counted : r.spent))), /*#__PURE__*/React.createElement("div", {
     className: "kbox"
   }, /*#__PURE__*/React.createElement("div", {
     className: "k"
@@ -1783,7 +1842,12 @@ function BudgetDetail({
   }, fmt(r.forecast)))), /*#__PURE__*/React.createElement(BudgetBar, {
     r: r,
     prog: prog
-  })), r.children.length > 1 && r.children.every(c => c.name === parent || !c.target) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }), prog.isCurrent && r.spreadMonth > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "small muted num",
+    style: {
+      marginTop: 8
+    }
+  }, "Actual spent ", fmt(r.spent), " · spread items ", fmt(r.spreadMonth), " / month, counted evenly per day")), r.children.length > 1 && r.children.every(c => c.name === parent || !c.target) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "sec-title"
   }, "Sub-categories · one budget for the whole category"), /*#__PURE__*/React.createElement("div", {
     className: "card tight"
@@ -4117,7 +4181,7 @@ function CategoriesPage({
       className: "muted small"
     }, " · ", c.name) : null), /*#__PURE__*/React.createElement("div", {
       className: "t2"
-    }, [c.alias && 'alias: ' + c.alias, c.fixed && 'fixed bill', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
+    }, [c.alias && 'alias: ' + c.alias, c.spread && 'spread over month', c.exclude && 'excluded from reports', c.active === false && 'hidden'].filter(Boolean).join(' · ') || ' ')), /*#__PURE__*/React.createElement("span", {
       className: "chev"
     }, "›"));
   }))), /*#__PURE__*/React.createElement("button", {
@@ -4274,7 +4338,7 @@ function CategoryEdit({
   }, "— none (top level) —"), parents.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.name,
     value: p.name
-  }, p.display)))), !f.parent && bool('fixed', 'Fixed bill (forecast = full target)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
+  }, p.display)))), bool('spread', 'Spread over month (bills, Shopee… paid once a month)'), bool('exclude', 'Exclude from reports'), bool('active', 'Visible'));
 }
 
 // ===================================================================

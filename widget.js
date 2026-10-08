@@ -77,10 +77,12 @@ function barImage(width, ratio, marker, color) {
 }
 
 // Màu giống app: vượt cả tháng hoặc vượt nhịp tới hôm nay (target to date) → đỏ.
+// counted = đã chi tới hôm nay, nhóm chia đều (điện, Shopee…) tính số cả tháng × ngày/tổng ngày (server tính, giống trang Budgets).
 const regular = d => d.spentMTD;
+const counted = d => d.counted != null ? d.counted : d.spentMTD;
 function paceColor(d) {
   if (!d.budget) return GREEN;
-  if (regular(d) > d.budget * d.day / d.days) return RED;
+  if (regular(d) > d.budget || counted(d) > d.budget * d.day / d.days) return RED;
   return GREEN;
 }
 
@@ -109,7 +111,7 @@ function summary(st, d, width, showDiff) {
   v.textColor = d.budget && regular(d) > d.budget ? RED : TEXT;
   // Medium/Large: chênh lệch so với target to date (= budget × ngày/tổng ngày, giống trang Budgets). Dương = chi nhanh hơn nhịp.
   if (showDiff && d.budget) {
-    const diff = regular(d) - d.budget * d.day / d.days;
+    const diff = counted(d) - d.budget * d.day / d.days;
     sr.addSpacer(5);
     const c = sr.addStack();
     c.layoutVertically();
@@ -122,6 +124,11 @@ function summary(st, d, width, showDiff) {
   const img = st.addImage(barImage(width, ratio, d.budget ? d.day / d.days : 0, paceColor(d)));
   img.imageSize = new Size(width, 12);
   st.addSpacer(4);
+  // Medium/Large: còn được tiêu hôm nay / mức hôm nay · dự đoán cuối tháng (giống đầu trang Budgets).
+  if (showDiff && d.budget && d.todayBudget != null) {
+    text(st, "Today " + fmt(d.todayLeft) + "/" + fmt(d.todayBudget) + " · Fcst " + fmt(d.forecast), 11, d.todayLeft < 0 ? RED : MUTED, true);
+    return;
+  }
   const left = d.budget - regular(d), daysLeft = d.days - d.day + 1;
   const line = !d.budget ? "Today " + fmt(d.spentToday)
     : left >= 0 ? "Left " + fmt(left) + " · " + daysLeft + "d" : "Over " + fmt(-left);
