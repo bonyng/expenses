@@ -267,6 +267,24 @@ async function openAdd(key, cat) {
   await wv.evaluateJavaScript("localStorage.setItem('exp_key', " + JSON.stringify(key) + "); true");
   wv.loadURL(APP + "?add=1&embed=1" + (cat ? "&cat=" + encodeURIComponent(cat) : "") + "&_=" + Date.now());
   await wv.present(true);
+  // App lưu kiểu lạc quan rồi gửi ở nền. Đóng màn hình mà script kết thúc ngay thì WebView bị huỷ, lời gọi chưa xong bị bỏ
+  // → giao dịch kẹt trong máy, app và Sheet không thấy. Giữ script chạy tới khi hàng chờ trống (tối đa ~90 giây).
+  const pending = async () => {
+    try { return Number(await wv.evaluateJavaScript("(JSON.parse(localStorage.getItem('exp_outbox') || '[]')).length")) || 0; }
+    catch (e) { return 0; }
+  };
+  let n = await pending();
+  for (let i = 0; n > 0 && i < 45; i++) {
+    await new Promise(r => Timer.schedule(2000, false, r));
+    n = await pending();
+  }
+  if (n > 0) {
+    const no = new Notification();
+    no.title = "Expenses";
+    no.body = n + " transaction(s) not saved yet — tap to open and send again.";
+    no.openURL = URLScheme.forRunningScript() + "?action=add";
+    await no.schedule();
+  }
 }
 
 async function menu() {

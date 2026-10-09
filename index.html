@@ -340,6 +340,8 @@ input, select, textarea { font: inherit; color: var(--text); }
 .qa-kp { flex: 1; min-height: 230px; grid-template-rows: repeat(5, 1fr); }
 .qa-kp button { height: auto; }
 .qa-kp button.ok { height: auto; }
+.qa-sync { position: fixed; left: 50%; transform: translateX(-50%); top: calc(max(env(safe-area-inset-top), 20px) + 10px); z-index: 61; background: #2C2C2E; color: var(--text); border: 0; padding: 7px 12px; border-radius: 999px; font-size: 13px; white-space: nowrap; }
+.qa-sync.red { color: #FFB4AE; }
 body.embed .toast { top: calc(max(env(safe-area-inset-top), 20px) + 54px); bottom: auto; }
 .qa-kp button { font-size: 24px; }
 .qa-kp button.op.calc { font-size: 28px; }
@@ -1352,7 +1354,7 @@ function TxRow({
     title = (t.type === 'expense' ? 'Transfer to ' : 'Transfer from ') + (other ? other.wallet : '?');
     icon = '⇄';
   }
-  const sub = [t.note || (parent !== t.category ? M.disp(parent) : ''), multi && !isTransfer(t) ? t.wallet : '', isP ? 'pending' : ''].filter(Boolean).join(' · ');
+  const sub = [t.note || (parent !== t.category ? M.disp(parent) : ''), multi && !isTransfer(t) && t.wallet !== DEFAULT_WALLET ? t.wallet : '', isP ? 'pending' : ''].filter(Boolean).join(' · ');
   return /*#__PURE__*/React.createElement("div", {
     className: 'item tap' + (isP || st ? ' pending' : ''),
     onClick: onClick
@@ -4881,7 +4883,16 @@ function App() {
         category: cat
       } : null,
       onClose: () => setEmbedKey(k => k + 1)
-    }), /*#__PURE__*/React.createElement(Toast, {
+    }), outbox.length > 0 && (() => {
+      // Đóng màn hình khi đang gửi thì WebView của Scriptable dừng luôn lời gọi → báo rõ để chờ, lỗi thì bấm gửi lại.
+      const bad = outbox.filter(x => x.state === 'failed');
+      return bad.length ? /*#__PURE__*/React.createElement("button", {
+        className: "qa-sync red",
+        onClick: () => bad.forEach(send)
+      }, "⚠️ ", bad.length, " not saved · Retry") : /*#__PURE__*/React.createElement("div", {
+        className: "qa-sync"
+      }, "⏳ Saving ", outbox.length, "… keep this open");
+    })(), /*#__PURE__*/React.createElement(Toast, {
       toast: toast
     }));
   }
