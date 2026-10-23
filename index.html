@@ -261,6 +261,10 @@ input, select, textarea { font: inherit; color: var(--text); }
 .ml-big { font-size: 18px; font-weight: 600; }
 .ml-ic { width: 40px; text-align: center; font-size: 18px; color: var(--muted); flex: none; }
 .ml-date { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.tw { position: relative; }
+.tw .mlrow:last-of-type { border-bottom: 1px solid var(--line); }
+.swapw { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); z-index: 2; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--card2); color: var(--green); font-size: 17px; display: flex; align-items: center; justify-content: center; }
+.swapw:active { transform: translateY(-50%) scale(.92); }
 .kpwrap { position: sticky; bottom: calc(-18px - var(--safe-b)); background: var(--bg); padding: 8px 0 4px; margin-top: 8px; }
 .btn.danger { background: var(--red-bg); color: var(--red); }
 .cs-full { position: fixed; inset: 0; z-index: 60; background: var(--bg); overflow-y: auto; padding: 14px 16px calc(24px + var(--safe-b)); max-width: 520px; margin: 0 auto; }
@@ -3225,6 +3229,22 @@ function AddTxSheet({
   const firstOther = n => (wallets.find(w => w.name !== n) || {}).name || '';
   const [from, setFrom] = useState(pair && pair.out ? pair.out.wallet : tx && tx.from || defWallet);
   const [to, setTo] = useState(pair && pair.in ? pair.in.wallet : (wallets.find(w => w.kind === 'savings' && w.name !== (tx && tx.from || defWallet)) || {}).name || firstOther(tx && tx.from || defWallet));
+  // Chọn ví trùng với ô còn lại thì tự đảo chiều (vd From đang Cash, To đang Savings, chọn From = Savings → To thành Cash)
+  const pickFrom = v => {
+    if (v === to) setTo(from);
+    setFrom(v);
+    setErr('');
+  };
+  const pickTo = v => {
+    if (v === from) setFrom(to);
+    setTo(v);
+    setErr('');
+  };
+  const swapW = () => {
+    setFrom(to);
+    setTo(from);
+    setErr('');
+  };
   const [quick, setQuick] = useState('');
   const [picker, setPicker] = useState(false);
   const [kp, setKp] = useState(!editing); // thêm mới: bàn phím số mở sẵn như Money Lover
@@ -3436,7 +3456,13 @@ function AddTxSheet({
       onClick: () => switchMode('transfer')
     }, "⇄ Transfer")), /*#__PURE__*/React.createElement("div", {
       className: "mlform"
-    }, amountRow, isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    }, amountRow, isT ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      className: "tw"
+    }, walletSel(from, pickFrom, 'From', '↗️'), walletSel(to, pickTo, 'To', '↙️'), /*#__PURE__*/React.createElement("button", {
+      className: "swapw",
+      onClick: swapW,
+      "aria-label": "Swap wallets"
+    }, "⇅"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       className: "mlrow",
       onClick: () => setPicker(true)
     }, /*#__PURE__*/React.createElement("div", {
@@ -3562,7 +3588,13 @@ function AddTxSheet({
     className: "calc-expr"
   }, fmtExpr(amount)), /*#__PURE__*/React.createElement("span", {
     className: "calc-res"
-  }, "= ", amt != null ? fmt(amt) : '—')) : fmtExpr(amount))), isT ? /*#__PURE__*/React.createElement(React.Fragment, null, walletSel(from, setFrom, 'From', '↗️'), walletSel(to, setTo, 'To', '↙️')) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "= ", amt != null ? fmt(amt) : '—')) : fmtExpr(amount))), isT ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "tw"
+  }, walletSel(from, pickFrom, 'From', '↗️'), walletSel(to, pickTo, 'To', '↙️'), /*#__PURE__*/React.createElement("button", {
+    className: "swapw",
+    onClick: swapW,
+    "aria-label": "Swap wallets"
+  }, "⇅"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "mlrow",
     onClick: () => {
       setKp(false);
