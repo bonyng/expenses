@@ -353,6 +353,19 @@ body.embed .toast { top: calc(max(env(safe-area-inset-top), 20px) + 54px); botto
 
 .fixed-items { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
 
+/* Review tháng + cảnh báo (01/11/2026) */
+.alert.lv1 .t1 { color: var(--amber); }
+.alert.lv2 .t1 { color: var(--red); }
+.alert .x { width: 28px; height: 28px; border-radius: 50%; color: var(--muted); font-size: 13px; flex: none; }
+.rv-txs { padding: 2px 16px 10px 60px; }
+.rv-tx { display: flex; gap: 10px; font-size: 13px; padding: 4px 0; align-items: center; }
+.rv-ai { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.rv-ai b { font-weight: 600; }
+.rv-ai .small { margin-top: 3px; }
+.chk { display: flex; align-items: center; gap: 10px; margin: 4px 4px 12px; font-size: 14px; color: var(--muted); }
+.chk input { width: 18px; height: 18px; accent-color: var(--green); }
+.rv-open { display: flex; align-items: center; gap: 12px; }
+
 </style>
 </head>
 <body>
@@ -650,17 +663,24 @@ function reportable(M, list) {
   return list.filter(t => !M.excluded(t.category));
 }
 
-/** Budget của 1 nhóm lá cho tháng ym: dòng MM/YYYY thắng dòng default. */
+/**
+ * Budget theo nhóm (khoá = tên nhóm trong sheet Budgets) cho tháng ym: dòng MM/YYYY thắng dòng default.
+ * Thắng theo NHÓM CHA: tháng có dòng riêng cho 1 nhóm cha thì bỏ mọi dòng default của nhóm đó (kể cả dòng cũ ở nhóm con),
+ * giống ô "Only <tháng>" ở màn Edit budgets. Server (widgetSummary) dùng cùng quy tắc.
+ */
 function leafBudget(M, ym) {
   const key = budgetMonthKey(ym),
+    def = {},
+    mon = {},
     out = {};
   M.boot.budgets.forEach(b => {
-    if (b.month === 'default') out[b.category] = b.amount;
+    if (b.month === 'default') def[b.category] = b.amount;else if (b.month === key) mon[b.category] = b.amount;
   });
-  M.boot.budgets.forEach(b => {
-    if (b.month === key) out[b.category] = b.amount;
+  const own = new Set(Object.keys(mon).map(c => M.parentOf(c)));
+  Object.keys(def).forEach(c => {
+    if (!own.has(M.parentOf(c))) out[c] = def[c];
   });
-  return out;
+  return Object.assign(out, mon);
 }
 
 /** Tiến độ tháng: số ngày đã qua d / tổng D. Tháng quá khứ d=D, tương lai d=0. */
@@ -1087,6 +1107,354 @@ function toCsv(M) {
   };
   const lines = [head.join(',')].concat(M.posted.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(t => [t.date, t.type, t.category, M.parentOf(t.category), t.amount, t.note, t.wallet, t.source].map(esc).join(',')));
   return '﻿' + lines.join('\n');
+}
+
+// ===================================================================
+// REVIEW — tổng kết tháng · dấu hiệu chi không cần thiết · đề xuất budget tháng sau · cảnh báo trong tháng
+// Quy tắc: docs/SPEC_REVIEW.md. Mọi số tính ở đây; trang chỉ hiển thị.
+// ===================================================================
+// Ngưỡng mặc định; ghi đè được bằng dòng cùng tên ở tab Settings của Sheet.
+const REVIEW_DEFAULTS = {
+  budget_total: 8000,
+  // tổng budget mục tiêu mỗi tháng (8 triệu, chốt 01/11/2026)
+  alert_pct: 0.8,
+  // cảnh báo khi nhóm dùng ≥ 80% budget
+  rv_spike_pct: 1.3,
+  rv_spike_min: 200,
+  // tăng vọt: ≥130% TB 3 tháng trước và chênh ≥ 200
+  rv_small_max: 100,
+  rv_small_count: 8,
+  // khoản nhỏ: ≤ 100, ≥ 8 lần/tháng trong 1 nhóm
+  rv_big_x: 3,
+  rv_big_min: 300,
+  // khoản lớn: ≥ 3× trung vị 6 tháng trước và ≥ 300
+  rv_note_count: 3,
+  // ghi chú trùng ≥ 3 lần/tháng
+  rv_floor_pct: 0.6 // không đề xuất nhóm nào dưới 60% TB 3 tháng
+};
+const rvNum = (M, k) => {
+  const v = M.settings[k];
+  const n = v === '' || v == null ? NaN : Number(v);
+  return isNaN(n) ? REVIEW_DEFAULTS[k] : n;
+};
+const round10 = v => Math.round(v / 10) * 10;
+const median = arr => {
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a, b) => a - b),
+    m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+/** Ghi chú chuẩn hoá để gom khoản trùng: bỏ dấu, bỏ số, bỏ ký tự lạ ("Grab 45k" ≈ "grab"). */
+const noteKey = s => fold(s).replace(/[\d.,]+k?/g, ' ').replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+const expenseOf = (M, ym) => reportable(M, monthTx(M, ym)).filter(t => t.type === 'expense');
+// Dấu hiệu chỉ xét giao dịch thật, tự nhập: bỏ dòng tổng hợp từ báo cáo Money Lover (ml_report) và khoản định kỳ đã lên kế hoạch (recurring).
+const organic = t => t.source !== 'ml_report' && t.source !== 'recurring';
+const sumByKey = (list, f) => {
+  const o = {};
+  list.forEach(t => {
+    const k = f(t);
+    o[k] = (o[k] || 0) + t.amount;
+  });
+  return o;
+};
+/** Budget theo nhóm cha của tháng ym (bỏ nhóm exclude). */
+function parentBudget(M, ym) {
+  const o = {};
+  Object.entries(leafBudget(M, ym)).forEach(([c, v]) => {
+    if (!M.excluded(c)) {
+      const p = M.parentOf(c);
+      o[p] = (o[p] || 0) + v;
+    }
+  });
+  return o;
+}
+
+/**
+ * 4 dấu hiệu chi không cần thiết của tháng ym (bỏ chi phí cố định — không cắt được).
+ * saving = số "có thể tiết kiệm" ước tính. waste[nhóm cha] không cộng trùng: max(tăng vọt, khoản nhỏ + khoản lớn).
+ */
+function reviewSignals(M, ym) {
+  const cur = expenseOf(M, ym).filter(t => !M.isFixed(t.category) && organic(t));
+  const signals = [];
+  // 1. Tăng vọt theo nhóm lá so với TB 3 tháng trước.
+  const curLeaf = sumByKey(cur, t => t.category),
+    avgLeaf = {};
+  [1, 2, 3].forEach(k => expenseOf(M, ymAdd(ym, -k)).forEach(t => {
+    avgLeaf[t.category] = (avgLeaf[t.category] || 0) + t.amount / 3;
+  }));
+  Object.keys(curLeaf).forEach(c => {
+    const v = curLeaf[c],
+      a = avgLeaf[c] || 0;
+    if (v - a >= rvNum(M, 'rv_spike_min') && v >= a * rvNum(M, 'rv_spike_pct')) signals.push({
+      kind: 'spike',
+      parent: M.parentOf(c),
+      category: c,
+      amount: v,
+      avg: a,
+      saving: v - a,
+      tx: cur.filter(t => t.category === c)
+    });
+  });
+  // 2. Khoản nhỏ lặp lại trong cùng nhóm lá.
+  const smallMax = rvNum(M, 'rv_small_max'),
+    smallBy = {};
+  cur.forEach(t => {
+    if (t.amount <= smallMax) (smallBy[t.category] = smallBy[t.category] || []).push(t);
+  });
+  Object.entries(smallBy).forEach(([c, l]) => {
+    if (l.length < rvNum(M, 'rv_small_count')) return;
+    const s = sumBy(l, t => t.amount);
+    signals.push({
+      kind: 'small',
+      parent: M.parentOf(c),
+      category: c,
+      count: l.length,
+      amount: s,
+      saving: s * 0.5,
+      tx: l
+    });
+  });
+  // 3. Khoản lớn bất thường: so với trung vị nhóm lá 6 tháng trước (cần ≥ 3 lần mua để có "mức thường").
+  const hist = {};
+  for (let k = 1; k <= 6; k++) expenseOf(M, ymAdd(ym, -k)).filter(organic).forEach(t => {
+    (hist[t.category] = hist[t.category] || []).push(t.amount);
+  });
+  cur.forEach(t => {
+    const h = hist[t.category] || [];
+    if (h.length < 3) return;
+    const md = median(h),
+      lim = md * rvNum(M, 'rv_big_x');
+    if (t.amount >= lim && t.amount >= rvNum(M, 'rv_big_min')) signals.push({
+      kind: 'big',
+      parent: M.parentOf(t.category),
+      category: t.category,
+      amount: t.amount,
+      median: md,
+      saving: t.amount - lim,
+      tx: [t]
+    });
+  });
+  // 4. Ghi chú trùng (phí định kỳ, cùng nơi mua). Bỏ nhóm đã báo ở "khoản nhỏ" nếu toàn khoản nhỏ — tránh báo 2 lần.
+  const byNote = {};
+  cur.forEach(t => {
+    const k = noteKey(t.note);
+    if (k.length >= 2) (byNote[k] = byNote[k] || []).push(t);
+  });
+  Object.values(byNote).forEach(l => {
+    if (l.length < rvNum(M, 'rv_note_count')) return;
+    if (l.every(t => t.amount <= smallMax && smallBy[t.category] && smallBy[t.category].length >= rvNum(M, 'rv_small_count'))) return;
+    signals.push({
+      kind: 'repeat',
+      parent: M.parentOf(l[0].category),
+      category: l[0].category,
+      label: l[0].note,
+      count: l.length,
+      amount: sumBy(l, t => t.amount),
+      saving: 0,
+      tx: l
+    });
+  });
+  const sp = {},
+    sb = {},
+    waste = {};
+  signals.forEach(s => {
+    if (s.kind === 'spike') sp[s.parent] = (sp[s.parent] || 0) + s.saving;
+    if (s.kind === 'small' || s.kind === 'big') sb[s.parent] = (sb[s.parent] || 0) + s.saving;
+  });
+  new Set(Object.keys(sp).concat(Object.keys(sb))).forEach(p => {
+    waste[p] = Math.max(sp[p] || 0, sb[p] || 0);
+  });
+  signals.sort((a, b) => b.saving - a.saving || b.amount - a.amount);
+  return {
+    signals,
+    waste
+  };
+}
+
+/** Nhóm vượt budget của tháng ym (gồm nhóm có chi mà không đặt budget), xếp theo số vượt. */
+function reviewOverruns(M, ym) {
+  const bt = budgetTable(M, ym);
+  const last3 = [0, 1, 2].map(k => ymAdd(ym, -k)).map(m => ({
+    b: parentBudget(M, m),
+    s: sumByKey(expenseOf(M, m), t => M.parentOf(t.category))
+  }));
+  const exp = expenseOf(M, ym);
+  return bt.rows.concat(bt.unused, bt.fixedRows).filter(r => r.spent > r.target + 0.5).map(r => {
+    const kids = r.children.filter(c => c.spent > 0).sort((a, b) => b.spent - a.spent);
+    const top = exp.filter(t => M.parentOf(t.category) === r.name).sort((a, b) => b.amount - a.amount).slice(0, 3);
+    const overN = last3.filter(x => (x.b[r.name] || 0) > 0 && (x.s[r.name] || 0) > x.b[r.name]).length;
+    return {
+      name: r.name,
+      fixed: r.fixed,
+      target: r.target,
+      spent: r.spent,
+      over: r.spent - r.target,
+      pct: r.target ? (r.spent - r.target) / r.target : null,
+      kids,
+      top,
+      overN
+    };
+  }).sort((a, b) => b.over - a.over);
+}
+
+/**
+ * Đề xuất budget tháng sau theo nhóm cha, tổng = budget_total (SPEC_REVIEW §3).
+ * why: fixed · raise · lower · nobudget · keep; cutWaste / cutShare = số đã cắt để về mục tiêu.
+ */
+function budgetProposal(M, ym, waste) {
+  const goal = rvNum(M, 'budget_total'),
+    floorPct = rvNum(M, 'rv_floor_pct');
+  const months = [0, 1, 2].map(k => ymAdd(ym, -k));
+  const B = months.map(m => parentBudget(M, m));
+  const S = months.map(m => sumByKey(expenseOf(M, m), t => M.parentOf(t.category)));
+  const avg12 = {}; // TB 12 tháng: khoản chi theo năm (học phí, bảo hiểm…) không bị hạ về 0 chỉ vì 3 tháng chưa chi
+  for (let k = 0; k < 12; k++) expenseOf(M, ymAdd(ym, -k)).forEach(t => {
+    const p = M.parentOf(t.category);
+    avg12[p] = (avg12[p] || 0) + t.amount / 12;
+  });
+  const names = new Set(Object.keys(B[0]).filter(p => B[0][p] > 0));
+  S.forEach(o => Object.keys(o).forEach(p => names.add(p)));
+  const rows = [...names].filter(p => !M.excluded(p)).map(p => {
+    const base = B[0][p] || 0,
+      avg3 = sumBy(S, o => o[p] || 0) / 3,
+      fixed = M.isFixed(p);
+    const overN = months.filter((m, i) => (B[i][p] || 0) > 0 && (S[i][p] || 0) > B[i][p]).length;
+    const underAll = months.every((m, i) => (B[i][p] || 0) > 0 && (S[i][p] || 0) < 0.7 * B[i][p]);
+    let amount = base,
+      why = 'keep';
+    if (fixed) {
+      amount = avg3 > 0 ? round10(avg3) : base;
+      why = 'fixed';
+    } else if (!base) {
+      amount = round10(avg3);
+      why = 'nobudget';
+    } else if (overN >= 2 && !(waste[p] > 0) && avg3 > base) {
+      amount = Math.min(round10(avg3), round10(base * 1.3));
+      why = 'raise';
+    } else if (underAll && round10(Math.max(avg3, avg12[p] || 0) * 1.1) < base) {
+      amount = round10(Math.max(avg3, avg12[p] || 0) * 1.1);
+      why = 'lower';
+    }
+    return {
+      name: p,
+      base,
+      avg3,
+      avg12: avg12[p] || 0,
+      spent: S[0][p] || 0,
+      fixed,
+      overN,
+      waste: waste[p] || 0,
+      amount,
+      why,
+      cutWaste: 0,
+      cutShare: 0
+    };
+  }).filter(r => r.base > 0 || r.avg3 >= 50); // nhóm lặt vặt không có budget: bỏ qua
+  const floor = r => r.fixed ? r.amount : Math.min(r.amount, round10(r.avg3 * floorPct));
+  const total = () => sumBy(rows, r => r.amount);
+  let gap = total() - goal;
+  // Bước 1: cắt ở nhóm có dấu hiệu lãng phí, tối đa bằng số "có thể tiết kiệm".
+  rows.filter(r => !r.fixed && r.waste > 0).sort((a, b) => b.waste - a.waste).forEach(r => {
+    if (gap <= 0) return;
+    const c = Math.min(round10(r.waste), Math.ceil(gap / 10) * 10, r.amount - floor(r));
+    if (c > 0) {
+      r.amount -= c;
+      r.cutWaste = c;
+      gap -= c;
+    }
+  });
+  // Bước 2: còn thiếu → cắt tỉ lệ theo phần còn cắt được của các nhóm linh hoạt.
+  if (gap > 0) {
+    // Ưu tiên nhóm còn cắt được ≥ 100 (tránh hàng loạt dòng "−10"); không đủ thì mới chia cho mọi nhóm.
+    const all = rows.filter(r => !r.fixed).map(r => [r, r.amount - floor(r)]).filter(x => x[1] > 0);
+    const bigCap = all.filter(x => x[1] >= 100);
+    const cap = sumBy(bigCap, x => x[1]) >= gap ? bigCap : all;
+    const capSum = sumBy(cap, x => x[1]),
+      g = gap;
+    if (capSum > 0) cap.forEach(([r, c]) => {
+      const x = Math.min(c, round10(g * c / capSum));
+      if (x > 0) {
+        r.amount -= x;
+        r.cutShare += x;
+        gap -= x;
+      }
+    });
+  }
+  // Bước 3: lệch do làm tròn → bù vào nhóm linh hoạt lớn nhất.
+  gap = total() - goal;
+  if (gap !== 0 && Math.abs(gap) <= 50 && sumBy(rows, r => r.cutWaste + r.cutShare) > 0) {
+    const big = rows.filter(r => !r.fixed && r.amount - gap >= floor(r)).sort((a, b) => b.amount - a.amount)[0];
+    if (big) {
+      big.amount -= gap;
+      if (gap > 0) big.cutShare += gap;else big.cutShare = Math.max(0, big.cutShare + gap);
+    }
+  }
+  rows.sort((a, b) => a.fixed - b.fixed || b.amount - a.amount);
+  const t = total();
+  return {
+    goal,
+    rows,
+    total: t,
+    overGoal: Math.max(0, t - goal),
+    buffer: Math.max(0, goal - t)
+  };
+}
+
+/** Toàn bộ số liệu trang Review cho tháng đã hết ym. */
+function monthReview(M, ym) {
+  const bt = budgetTable(M, ym),
+    s = monthSummary(M, ym);
+  const {
+    signals,
+    waste
+  } = reviewSignals(M, ym);
+  return {
+    ym,
+    next: ymAdd(ym, 1),
+    T: bt.total,
+    income: s.income,
+    expense: s.expense,
+    savedPct: s.income > 0 ? s.net / s.income : null,
+    saveGoal: savingsTarget(M),
+    overs: reviewOverruns(M, ym),
+    signals,
+    waste,
+    possible: sumBy(Object.values(waste), v => v),
+    proposal: budgetProposal(M, ym, waste)
+  };
+}
+
+/** Bảng tóm tắt gửi kèm cho AI (gọn để vừa URL GET; giao dịch + ghi chú do server tự đọc từ Sheet). */
+function reviewAiSummary(M, R) {
+  const r0 = v => Math.round(v);
+  return {
+    goal: R.proposal.goal,
+    budget: r0(R.T.target),
+    spent: r0(R.T.spent),
+    income: r0(R.income),
+    saveGoal: R.saveGoal,
+    cats: budgetTable(M, R.ym).rows.concat(budgetTable(M, R.ym).fixedRows).map(r => [M.disp(r.name), r0(r.target), r0(r.spent)]),
+    signals: R.signals.slice(0, 10).map(s => [s.kind, M.disp(s.category), r0(s.amount), s.count || 0])
+  };
+}
+
+/** Cảnh báo trong tháng đang chạy: nhóm linh hoạt đã vượt (level 2) · dùng ≥ alert_pct budget hoặc (từ ngày 7) dự báo vượt (level 1). */
+function budgetAlerts(M) {
+  const bt = budgetTable(M, ymOf(M.today)),
+    prog = bt.prog,
+    pct = rvNum(M, 'alert_pct');
+  const days = prog.D - prog.d + 1;
+  return bt.rows.filter(r => r.target > 0).map(r => {
+    const level = r.spent > r.target ? 2 : r.used >= pct || prog.d >= 7 && r.forecast > r.target ? 1 : 0;
+    const left = r.target - r.spent;
+    return {
+      r,
+      level,
+      left,
+      days,
+      perDay: Math.max(0, left) / days
+    };
+  }).filter(a => a.level).sort((a, b) => b.level - a.level || b.r.used - a.r.used);
 }
 
 // ===================================================================
@@ -1585,6 +1953,9 @@ function TransactionsPage({
     ym: ym,
     setYm: setYm,
     today: M.today
+  }), !q && ym === ymOf(M.today) && /*#__PURE__*/React.createElement(AlertCard, {
+    M: M,
+    ctx: ctx
   }), !q && /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1816,7 +2187,27 @@ function BudgetsPage({
     className: "small"
   }, "(goal ", fmtPct(sv.target), ")")), /*#__PURE__*/React.createElement("span", {
     className: 'num ' + (sv.fcPct >= sv.target ? 'green' : 'amber')
-  }, fmtPct(sv.fcPct)))), /*#__PURE__*/React.createElement(FixedCard, {
+  }, fmtPct(sv.fcPct)))), prog.isCurrent && /*#__PURE__*/React.createElement(AlertCard, {
+    M: M,
+    ctx: ctx
+  }), !prog.isCurrent && prog.d > 0 && /*#__PURE__*/React.createElement("button", {
+    className: "card rv-open",
+    style: {
+      width: '100%',
+      textAlign: 'left'
+    },
+    onClick: () => ctx.openReview(ym)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ic sm"
+  }, "📋"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1"
+  }, "Month review"), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, "What went over · what to cut · budget for ", ymLabel(ymAdd(ym, 1)))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement(FixedCard, {
     M: M,
     ctx: ctx,
     rows: bt.fixedRows,
@@ -2279,7 +2670,24 @@ function ReportPage({
     period: period,
     setPeriod: setPeriod,
     today: M.today
-  }), /*#__PURE__*/React.createElement("div", {
+  }), !isYear && period < tym && period >= String(M.settings.budget_start || BUDGET_START) && /*#__PURE__*/React.createElement("button", {
+    className: "card rv-open",
+    style: {
+      width: '100%',
+      textAlign: 'left'
+    },
+    onClick: () => ctx.openReview(period)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "ic sm"
+  }, "📋"), /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1"
+  }, "Month review"), /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, "What went over · what to cut · budget for ", ymLabel(ymAdd(period, 1)))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "between"
@@ -3046,6 +3454,425 @@ function WalletEdit({
       margin: '4px'
     }
   }, UNIT_LABEL));
+}
+
+// ===================================================================
+// REVIEW PAGE — tổng kết tháng đã hết + đề xuất budget tháng sau · thẻ cảnh báo trong tháng
+// ===================================================================
+const ALERT_OFF = 'exp_alert_off'; // {"yyyy-MM|nhóm": level đã ẩn} — hiện lại khi lên mức nặng hơn
+const REVIEW_SEEN = 'exp_review_seen'; // tháng đã tự bật Review trên máy này ('yyyy-MM')
+
+/** Thẻ cảnh báo đầu trang Transactions/Budgets: tối đa 2 nhóm nặng nhất của tháng đang chạy. */
+function AlertCard({
+  M,
+  ctx
+}) {
+  const [off, setOff] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(ALERT_OFF) || '{}') || {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const ym = ymOf(M.today),
+    pct = rvNum(M, 'alert_pct');
+  const all = useMemo(() => budgetAlerts(M), [M]);
+  const list = all.filter(a => !((off[ym + '|' + a.r.name] || 0) >= a.level)).slice(0, 2);
+  if (!list.length) return null;
+  const hide = a => {
+    const n = {
+      ...off,
+      [ym + '|' + a.r.name]: a.level
+    };
+    Object.keys(n).forEach(k => {
+      if (!k.startsWith(ym + '|')) delete n[k];
+    }); // dọn tháng cũ
+    setOff(n);
+    try {
+      localStorage.setItem(ALERT_OFF, JSON.stringify(n));
+    } catch (e) {/* ignore */}
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, list.map(a => {
+    const r = a.r,
+      over = a.level > 1;
+    const head = over ? 'over by ' + fmt(-a.left) : r.used >= pct ? 'used ' + fmtPct(r.used) : 'heading over';
+    const sub = over ? 'Month budget ' + fmt(r.target) + ' · spent ' + fmt(r.spent) : (r.used < pct ? 'Forecast ' + fmt(r.forecast) + ' / ' + fmt(r.target) + ' · ' : '') + 'left ' + fmt(a.left) + ' for ' + a.days + ' day' + (a.days > 1 ? 's' : '') + ' (~' + fmt(a.perDay) + '/day)';
+    return /*#__PURE__*/React.createElement("div", {
+      className: 'item tap alert ' + (over ? 'lv2' : 'lv1'),
+      key: r.name,
+      onClick: () => ctx.openBudget(r.name, ym)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, M.icon(r.name)), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "t1 ellipsis"
+    }, over ? '⛔' : '⚠️', " ", M.disp(r.name), " · ", head), /*#__PURE__*/React.createElement("div", {
+      className: "t2 num"
+    }, sub)), /*#__PURE__*/React.createElement("button", {
+      className: "x",
+      "aria-label": "Hide",
+      onClick: e => {
+        e.stopPropagation();
+        hide(a);
+      }
+    }, "✕"));
+  }));
+}
+const ddmm = d => d.slice(8, 10) + '/' + d.slice(5, 7);
+function sigView(M, s) {
+  const c = M.disp(s.category);
+  if (s.kind === 'spike') return {
+    icon: '📈',
+    title: c + ' jumped',
+    sub: fmt(s.amount) + ' vs avg ' + fmt(s.avg) + (s.avg > 0 ? ' (+' + fmtPct(s.amount / s.avg - 1) + ')' : ' · new this month')
+  };
+  if (s.kind === 'small') return {
+    icon: '☕',
+    title: s.count + ' small buys · ' + c,
+    sub: 'Each ≤ ' + fmt(rvNum(M, 'rv_small_max')) + ' · total ' + fmt(s.amount)
+  };
+  if (s.kind === 'big') {
+    const t = s.tx[0];
+    return {
+      icon: '💥',
+      title: 'Unusual big buy · ' + c,
+      sub: fmt(s.amount) + ' on ' + ddmm(t.date) + (t.note ? ' “' + t.note + '”' : '') + ' · usual ' + fmt(s.median)
+    };
+  }
+  return {
+    icon: '🔁',
+    title: '“' + s.label + '” × ' + s.count,
+    sub: c + ' · total ' + fmt(s.amount)
+  };
+}
+function whyText(M, r, prevYm) {
+  const base = r.why === 'fixed' ? 'Fixed · avg 3 mo ' + fmt(r.avg3) : r.why === 'raise' ? 'Over in ' + r.overN + ' of last 3 mo → realistic (avg ' + fmt(r.avg3) + ')' : r.why === 'lower' ? 'Used < 70% for 3 mo → lowered (avg 12 mo ' + fmt(r.avg12) + ')' : r.why === 'nobudget' ? 'No budget, avg spent ' + fmt(r.avg3) : MON3[+prevYm.slice(5, 7) - 1] + ' ' + fmt(r.base) + ' · avg ' + fmt(r.avg3);
+  const cuts = [r.cutWaste > 0 && '−' + fmt(r.cutWaste) + ' avoidable', r.cutShare > 0 && '−' + fmt(r.cutShare) + ' to reach goal'].filter(Boolean);
+  return base + (cuts.length ? ' · ' + cuts.join(' · ') : '');
+}
+const AI_ERRORS = {
+  NO_GEMINI_KEY: 'AI key not set yet — add GEMINI_KEY in Apps Script › Project Settings › Script properties.',
+  'Unknown function': 'AI is not available in this app version yet.',
+  'Daily AI limit reached': 'Daily AI limit reached — try again tomorrow.'
+};
+function ReviewPage({
+  M,
+  ctx,
+  ym,
+  onBack
+}) {
+  const R = useMemo(() => monthReview(M, ym), [M, ym]);
+  const P = R.proposal,
+    T = R.T;
+  const [draft, setDraft] = useState({});
+  const [asDefault, setAsDefault] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(-1);
+  const [more, setMore] = useState(false);
+  const [ai, setAi] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiErr, setAiErr] = useState('');
+  const stored = (M.boot.reviews || []).find(r => r.month === budgetMonthKey(ym));
+  const A = ai || stored && stored.ai;
+  const val = r => draft[r.name] != null ? parseNum(draft[r.name]) || 0 : r.amount;
+  const total = sumBy(P.rows, val);
+  const nextKey = budgetMonthKey(R.next);
+  const applied = M.boot.budgets.some(b => b.month === nextKey);
+  const overAll = T.spent - T.target;
+  const sigs = more ? R.signals : R.signals.slice(0, 6);
+  const runAi = () => {
+    setAiBusy(true);
+    setAiErr('');
+    rpc('runReviewAI', {
+      ym,
+      summary: reviewAiSummary(M, R)
+    }).then(res => {
+      setAi(res.review.ai);
+      ctx.reload().catch(() => {});
+    }).catch(e => setAiErr(AI_ERRORS[String(e)] || String(e))).finally(() => setAiBusy(false));
+  };
+  // Ghi budget tháng sau ở nhóm cha; dòng cũ ở nhóm con cùng phạm vi bị xoá (giống màn Edit budgets).
+  const apply = () => {
+    setBusy(true);
+    const items = [],
+      scopes = asDefault ? [nextKey, 'default'] : [nextKey];
+    const parents = new Set(P.rows.map(r => r.name));
+    scopes.forEach(month => {
+      P.rows.forEach(r => items.push({
+        month,
+        category: r.name,
+        amount: val(r)
+      }));
+      M.boot.budgets.forEach(b => {
+        if (b.month === month && b.category !== M.parentOf(b.category) && parents.has(M.parentOf(b.category))) items.push({
+          month,
+          category: b.category,
+          amount: 0
+        });
+      });
+    });
+    rpc('saveBudgets', items).then(() => ctx.reload('Budget for ' + ymLabel(R.next) + ' saved')).catch(ctx.fail).finally(() => setBusy(false));
+  };
+  return /*#__PURE__*/React.createElement(FullPage, {
+    title: "Month review",
+    onBack: onBack
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sub muted small between",
+    style: {
+      margin: '4px 2px 12px'
+    }
+  }, /*#__PURE__*/React.createElement("span", null, ymLabel(ym), " · closed month"), /*#__PURE__*/React.createElement("span", {
+    className: "unit"
+  }, UNIT_LABEL)), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small",
+    style: {
+      letterSpacing: .8,
+      fontWeight: 600
+    }
+  }, !T.target ? 'NO BUDGET' : overAll > 0 ? 'OVER BUDGET' : 'UNDER BUDGET'), /*#__PURE__*/React.createElement("div", {
+    className: 'big num ' + (overAll > 0 ? 'red' : 'green')
+  }, T.target ? fmt(Math.abs(overAll)) : fmt(T.spent))), T.target > 0 && /*#__PURE__*/React.createElement("span", {
+    className: 'pill ' + (overAll > 0 ? 'r' : 'g')
+  }, fmtPct(T.spent / T.target), " used")), /*#__PURE__*/React.createElement("div", {
+    className: "kgrid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Spent"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.spent))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Budget"), /*#__PURE__*/React.createElement("div", {
+    className: "v num"
+  }, fmt(T.target))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, "Income"), /*#__PURE__*/React.createElement("div", {
+    className: "v num blue"
+  }, fmt(R.income))), /*#__PURE__*/React.createElement("div", {
+    className: "kbox"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "k"
+  }, /*#__PURE__*/React.createElement("span", null, "Saved"), /*#__PURE__*/React.createElement("span", null, "goal ", fmtPct(R.saveGoal))), /*#__PURE__*/React.createElement("div", {
+    className: 'v num ' + (R.savedPct >= R.saveGoal ? 'green' : 'amber')
+  }, fmtPct(R.savedPct)))), R.possible > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "small",
+    style: {
+      marginTop: 12
+    }
+  }, "💡 Avoidable spending found: about ", /*#__PURE__*/React.createElement("b", {
+    className: "green num"
+  }, fmt(R.possible)))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Over budget · ", R.overs.length), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, R.overs.map(o => /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    key: o.name,
+    onClick: () => ctx.openBudget(o.name, ym)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, M.icon(o.name)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "t1 ellipsis"
+  }, M.disp(o.name)), /*#__PURE__*/React.createElement("span", {
+    className: "pill r num"
+  }, o.target ? '+' + fmt(o.over) + ' · ' + fmtPct(o.pct) : 'No budget')), /*#__PURE__*/React.createElement("div", {
+    className: "t2 num"
+  }, "Spent ", fmt(o.spent), " / ", o.target ? fmt(o.target) : '—', o.overN >= 2 ? ' · over ' + o.overN + ' of last 3 mo' : ''), o.kids.length > 1 && /*#__PURE__*/React.createElement("div", {
+    className: "t2 ellipsis num"
+  }, "Mostly ", o.kids.slice(0, 3).map(c => M.disp(c.name) + ' ' + fmt(c.spent)).join(' · ')), o.top[0] && /*#__PURE__*/React.createElement("div", {
+    className: "t2 ellipsis num"
+  }, "Biggest ", ddmm(o.top[0].date), " ", o.top[0].note ? '“' + o.top[0].note + '” ' : '', fmt(o.top[0].amount))), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›"))), !R.overs.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No category went over budget 🎉")), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Could cut", R.possible > 0 ? ' · ~' + fmt(R.possible) : ''), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, sigs.map((s, i) => {
+    const v = sigView(M, s);
+    return /*#__PURE__*/React.createElement("div", {
+      key: i
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "item tap",
+      onClick: () => setOpen(open === i ? -1 : i)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ic sm"
+    }, v.icon), /*#__PURE__*/React.createElement("div", {
+      className: "grow"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "t1 ellipsis"
+    }, v.title), /*#__PURE__*/React.createElement("div", {
+      className: "t2 ellipsis num"
+    }, v.sub)), s.saving > 0 && /*#__PURE__*/React.createElement("span", {
+      className: "pill g num"
+    }, "save ~", fmt(s.saving)), /*#__PURE__*/React.createElement("span", {
+      className: "chev"
+    }, open === i ? '⌄' : '›')), open === i && /*#__PURE__*/React.createElement("div", {
+      className: "rv-txs"
+    }, s.tx.slice().sort((a, b) => a.date < b.date ? -1 : 1).slice(0, 15).map(t => /*#__PURE__*/React.createElement("div", {
+      className: "rv-tx",
+      key: t.id
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "muted num"
+    }, ddmm(t.date)), /*#__PURE__*/React.createElement("span", {
+      className: "grow ellipsis"
+    }, t.note || M.disp(t.category)), /*#__PURE__*/React.createElement("span", {
+      className: "num"
+    }, fmt(t.amount)))), s.tx.length > 15 && /*#__PURE__*/React.createElement("div", {
+      className: "rv-tx muted"
+    }, "+", s.tx.length - 15, " more")));
+  }), R.signals.length > 6 && !more && /*#__PURE__*/React.createElement("div", {
+    className: "item tap",
+    onClick: () => setMore(true)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow muted"
+  }, R.signals.length - 6, " more signals"), /*#__PURE__*/React.createElement("span", {
+    className: "chev"
+  }, "›")), !R.signals.length && /*#__PURE__*/React.createElement("div", {
+    className: "empty"
+  }, "No unusual spending found")), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "AI coach"), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, A ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "t1"
+  }, "🤖 ", A.headline), (A.insights || []).map((x, i) => /*#__PURE__*/React.createElement("div", {
+    className: "rv-ai",
+    key: i
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("b", null, x.title), x.saving > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "pill g num"
+  }, "save ~", fmt(x.saving))), /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, x.detail))), (A.repeats || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rv-ai"
+  }, /*#__PURE__*/React.createElement("b", null, "Repeated & subscriptions"), A.repeats.map((x, i) => /*#__PURE__*/React.createElement("div", {
+    className: "rv-tx",
+    key: i
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow ellipsis"
+  }, x.label, " × ", x.count, x.category ? ' · ' + x.category : ''), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(x.total))))), (A.actions || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rv-ai"
+  }, /*#__PURE__*/React.createElement("b", null, "Next month"), A.actions.map((x, i) => /*#__PURE__*/React.createElement("div", {
+    className: "small",
+    key: i
+  }, "✅ ", x))), /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      marginTop: 10
+    }
+  }, stored && !ai ? 'Analyzed ' + String(stored.created_at).slice(0, 10) + ' · ' : '', aiBusy ? /*#__PURE__*/React.createElement("span", {
+    className: "spinner"
+  }) : /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: runAi
+  }, "Re-analyze"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "small muted"
+  }, "AI reads this month's transactions and notes to find repeated buys, subscriptions and what to change. Data is sent to Google Gemini (free tier)."), /*#__PURE__*/React.createElement("button", {
+    className: "btn ghost",
+    style: {
+      marginTop: 12
+    },
+    onClick: runAi,
+    disabled: aiBusy
+  }, aiBusy ? 'Analyzing… (up to 1 min)' : '🤖 Analyze with AI')), aiErr && /*#__PURE__*/React.createElement("div", {
+    className: "err"
+  }, "⚠️ ", aiErr)), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Budget for ", ymLabel(R.next)), /*#__PURE__*/React.createElement("div", {
+    className: "card bsum"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Proposed total"), /*#__PURE__*/React.createElement("div", {
+    className: 'mid num ' + (total > P.goal ? 'red' : 'green')
+  }, fmt(total))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: 'right'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "muted small"
+  }, "Goal"), /*#__PURE__*/React.createElement("div", {
+    className: "mid num"
+  }, fmt(P.goal)))), /*#__PURE__*/React.createElement("div", {
+    className: "small",
+    style: {
+      marginTop: 8
+    }
+  }, total > P.goal ? /*#__PURE__*/React.createElement("span", {
+    className: "red"
+  }, "Still ", fmt(total - P.goal), " over the goal — lower some categories below.") : total < P.goal ? /*#__PURE__*/React.createElement("span", {
+    className: "muted"
+  }, "Buffer ", fmt(P.goal - total), " left unassigned.") : /*#__PURE__*/React.createElement("span", {
+    className: "green"
+  }, "Matches your goal ✓"))), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, P.rows.map(r => /*#__PURE__*/React.createElement("div", {
+    className: "brow",
+    key: r.name,
+    style: {
+      padding: '12px 14px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "ic sm"
+  }, M.icon(r.name)), /*#__PURE__*/React.createElement("div", {
+    className: "grow"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "t1 ellipsis"
+  }, M.disp(r.name), r.fixed ? /*#__PURE__*/React.createElement("span", {
+    className: "muted small"
+  }, " · fixed") : ''), /*#__PURE__*/React.createElement("div", {
+    className: "t2 num"
+  }, whyText(M, r, ym))), /*#__PURE__*/React.createElement(MoneyInput, {
+    className: "binp",
+    value: draft[r.name] != null ? draft[r.name] : String(r.amount),
+    onChange: v => setDraft(d => ({
+      ...d,
+      [r.name]: v
+    }))
+  })))), /*#__PURE__*/React.createElement("label", {
+    className: "chk"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: asDefault,
+    onChange: e => setAsDefault(e.target.checked)
+  }), " Also use as the every-month budget"), /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: apply,
+    disabled: busy
+  }, busy ? '…' : (applied ? 'Apply again to ' : 'Apply to ') + ymLabel(R.next)), applied && /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      textAlign: 'center',
+      marginTop: 8
+    }
+  }, "✓ ", ymLabel(R.next), " already has its own budget · ", /*#__PURE__*/React.createElement("button", {
+    className: "link",
+    onClick: () => ctx.editBudgets(R.next)
+  }, "Edit budgets")), /*#__PURE__*/React.createElement("div", {
+    className: "foot-note"
+  }, UNIT_LABEL, " · fixed costs are not cut · thresholds can be changed in the Settings tab of the Sheet"));
 }
 
 // ===================================================================
@@ -3915,6 +4742,15 @@ function AccountPage({
     } // ô trống/sai → trả về số cũ
     saveSetting('savings_target', n / 100);
   };
+  const [goal, setGoal] = useState(String(rvNum(M, 'budget_total')));
+  const saveGoal = () => {
+    const n = parseNum(goal);
+    if (!(n > 0)) {
+      setGoal(String(rvNum(M, 'budget_total')));
+      return;
+    }
+    if (n !== rvNum(M, 'budget_total')) saveSetting('budget_total', n);
+  };
   const exportCsv = () => {
     try {
       const blob = new Blob([toCsv(M)], {
@@ -4000,6 +4836,17 @@ function AccountPage({
     onChange: e => setTarget(e.target.value),
     onBlur: saveTarget
   }), "%"), /*#__PURE__*/React.createElement("div", {
+    className: "item"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grow"
+  }, "Monthly budget goal", /*#__PURE__*/React.createElement("div", {
+    className: "t2"
+  }, "Used by Month review to propose next month")), /*#__PURE__*/React.createElement(MoneyInput, {
+    className: "inp",
+    value: goal,
+    onChange: setGoal,
+    onBlur: saveGoal
+  })), /*#__PURE__*/React.createElement("div", {
     className: "item"
   }, /*#__PURE__*/React.createElement("span", {
     className: "grow"
@@ -4733,6 +5580,10 @@ function App() {
       kind: 'report',
       ym
     }),
+    openReview: ym => push({
+      kind: 'review',
+      ym
+    }),
     openWallets: () => push({
       kind: 'wallets'
     }),
@@ -4889,6 +5740,27 @@ function App() {
       load().catch(() => {});
     }).catch(fail)
   };
+
+  // Tháng mới: tự bật Review tháng trước 1 lần trên máy này (SPEC_REVIEW R1). Mở lại được ở Report / Budgets tháng đã hết.
+  const autoReview = useRef(false);
+  useEffect(() => {
+    if (!M || autoReview.current || EMBED) return;
+    autoReview.current = true;
+    const prev = ymAdd(ymOf(M.today), -1);
+    let seenRv = '';
+    try {
+      seenRv = localStorage.getItem(REVIEW_SEEN) || '';
+    } catch (e) {/* ignore */}
+    if (prev >= String(M.settings.budget_start || BUDGET_START) && seenRv < prev && monthTx(M, prev).length) {
+      try {
+        localStorage.setItem(REVIEW_SEEN, prev);
+      } catch (e) {/* ignore */}
+      push({
+        kind: 'review',
+        ym: prev
+      });
+    }
+  }, [M]);
   if (!M) {
     return /*#__PURE__*/React.createElement("div", {
       className: "app"
@@ -4955,6 +5827,12 @@ function App() {
     ym: overlay.ym,
     onBack: pop
   }), overlay && overlay.kind === 'report' && /*#__PURE__*/React.createElement(ReportPage, {
+    key: stack.length,
+    M: M,
+    ctx: ctx,
+    ym: overlay.ym,
+    onBack: pop
+  }), overlay && overlay.kind === 'review' && /*#__PURE__*/React.createElement(ReviewPage, {
     key: stack.length,
     M: M,
     ctx: ctx,

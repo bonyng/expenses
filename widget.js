@@ -220,7 +220,12 @@ async function build(fam) {
   body.addSpacer(14);
   const right = body.addStack();
   right.layoutVertically();
-  text(right, "Quick add", 11, MUTED, true);
+  // Cảnh báo nhóm nặng nhất (server: budgetAlert_) thay dòng "Quick add": cam = dùng ≥ 80% / dự báo vượt, đỏ = đã vượt.
+  const al = d.alert;
+  if (al) {
+    const t = text(right, (al.level > 1 ? "⛔ " : "⚠️ ") + al.label + " " + (al.level > 1 ? "over " + fmt(-al.left) : Math.round(al.used * 100) + "%"), 11, al.level > 1 ? RED : new Color("#F5B83D"), true);
+    t.lineLimit = 1; t.minimumScaleFactor = 0.75;
+  } else text(right, "Quick add", 11, MUTED, true);
   right.addSpacer(6);
   const cats = (d.cats || []).slice(0, 6);
   for (let r = 0; r < 2; r++) {
