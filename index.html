@@ -3583,6 +3583,8 @@ function ReviewPage({
   const applied = M.boot.budgets.some(b => b.month === nextKey);
   const overAll = T.spent - T.target;
   const sigs = more ? R.signals : R.signals.slice(0, 6);
+
+  // Hết 90 giây phía app thì server vẫn chạy tiếp và lưu vào tab Reviews → tải lại sau 30 và 75 giây để lấy kết quả.
   const runAi = () => {
     setAiBusy(true);
     setAiErr('');
@@ -3591,9 +3593,26 @@ function ReviewPage({
       summary: reviewAiSummary(M, R)
     }).then(res => {
       setAi(res.review.ai);
+      setAiBusy(false);
       ctx.reload().catch(() => {});
-    }).catch(e => setAiErr(AI_ERRORS[String(e)] || String(e))).finally(() => setAiBusy(false));
+    }).catch(e => {
+      const msg = String(e);
+      if (/No response|Network error|server busy/i.test(msg)) {
+        setAiErr('AI is still working on the server — the result will appear here in about a minute.');
+        [30000, 75000].forEach(ms => setTimeout(() => ctx.reload().catch(() => {}), ms));
+        setTimeout(() => setAiBusy(false), 75000);
+        return;
+      }
+      setAiErr(AI_ERRORS[msg] || msg);
+      setAiBusy(false);
+    });
   };
+  useEffect(() => {
+    if (stored && stored.ai) {
+      setAiErr('');
+      setAiBusy(false);
+    }
+  }, [stored && stored.created_at]);
   // Ghi budget tháng sau ở nhóm cha; dòng cũ ở nhóm con cùng phạm vi bị xoá (giống màn Edit budgets).
   const apply = () => {
     setBusy(true);
