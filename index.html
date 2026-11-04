@@ -659,8 +659,9 @@ function transferPair(M, t) {
 function monthTx(M, ym) {
   return M.posted.filter(t => t.date.startsWith(ym));
 }
+/** Giao dịch tính vào báo cáo/ngân sách: bỏ nhóm exclude và ví không thuộc Total (vd ví giữ hộ Mom) — giống bộ lọc Total ở Transactions. */
 function reportable(M, list) {
-  return list.filter(t => !M.excluded(t.category));
+  return list.filter(t => !M.excluded(t.category) && M.inTotal.has(t.wallet));
 }
 
 /**
@@ -2254,7 +2255,7 @@ function BudgetDetail({
   };
   const prog = bt.prog;
   const kids = new Set(M.childrenOf[parent] || [parent]);
-  const list = monthTx(M, ym).filter(t => kids.has(t.category));
+  const list = monthTx(M, ym).filter(t => kids.has(t.category) && M.inTotal.has(t.wallet));
   const s = paceStatus(r, prog);
   return /*#__PURE__*/React.createElement(FullPage, {
     title: M.disp(parent),
