@@ -2928,6 +2928,55 @@ function ReportPage({
  * Bấm 1 nhóm trong báo cáo: biểu đồ tròn các nhóm con (% và số tiền) → bấm nhóm con: giao dịch theo ngày.
  * Nhóm không có nhóm con → vào thẳng danh sách giao dịch.
  */
+/** Báo cáo năm: tổng từng tháng của 1 nhóm (cha hoặc con). Bấm 1 tháng → lọc danh sách giao dịch theo tháng đó (bấm lại để bỏ lọc). */
+function CatMonths({
+  M,
+  R,
+  list,
+  pick,
+  onPick
+}) {
+  const tym = ymOf(M.today),
+    months = R.months.filter(m => m <= tym);
+  const by = {},
+    cnt = {};
+  list.forEach(t => {
+    const m = t.date.slice(0, 7);
+    by[m] = (by[m] || 0) + t.amount;
+    cnt[m] = (cnt[m] || 0) + 1;
+  });
+  const total = sumBy(list, t => t.amount),
+    tot = total || 1;
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Month by month"), /*#__PURE__*/React.createElement("div", {
+    className: "card tight"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mtable head"
+  }, /*#__PURE__*/React.createElement("span", null, "Month"), /*#__PURE__*/React.createElement("span", null, "Amount"), /*#__PURE__*/React.createElement("span", null, "Txns"), /*#__PURE__*/React.createElement("span", null, "Share")), months.map(m => /*#__PURE__*/React.createElement("div", {
+    className: 'mtable' + (onPick && by[m] ? ' tap' : ''),
+    key: m,
+    style: pick === m ? {
+      background: 'var(--card2)'
+    } : null,
+    onClick: () => onPick && by[m] && onPick(pick === m ? null : m)
+  }, /*#__PURE__*/React.createElement("span", null, MON3[+m.slice(5, 7) - 1], m === tym ? '*' : '', pick === m ? ' ✓' : ''), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, by[m] ? fmt(by[m]) : '—'), /*#__PURE__*/React.createElement("span", {
+    className: "num muted"
+  }, cnt[m] || ''), /*#__PURE__*/React.createElement("span", {
+    className: "num muted"
+  }, by[m] ? fmtPct(by[m] / tot) : ''))), /*#__PURE__*/React.createElement("div", {
+    className: "mtable"
+  }, /*#__PURE__*/React.createElement("span", null, "Avg/mo"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, fmt(total / Math.max(1, months.length))), /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("span", null))), onPick && /*#__PURE__*/React.createElement("div", {
+    className: "small muted",
+    style: {
+      margin: '-4px 4px 12px'
+    }
+  }, pick ? 'Showing ' + ymLabel(pick) + ' only · tap it again to show all' : 'Tap a month to see only its transactions', months.includes(tym) ? ' · * this month so far' : ''));
+}
 function CategoryDrill({
   M,
   ctx,
@@ -2938,6 +2987,7 @@ function CategoryDrill({
   onBack
 }) {
   const [leaf, setLeaf] = useState(null);
+  const [pick, setPick] = useState(null);
   const kids = new Set(M.childrenOf[parent] || [parent]);
   const list = reportable(M, M.posted.filter(t => t.date >= R.first && t.date < R.next)).filter(t => t.type === type && kids.has(t.category));
   const by = {};
@@ -2954,9 +3004,13 @@ function CategoryDrill({
   const name = n => n === parent && !single ? M.disp(parent) + ' (general)' : M.disp(n);
   if (leaf || single) {
     const l = leaf ? list.filter(t => t.category === leaf) : list;
+    const shown = pick ? l.filter(t => t.date.startsWith(pick)) : l;
     return /*#__PURE__*/React.createElement(FullPage, {
       title: leaf ? name(leaf) : M.disp(parent),
-      onBack: leaf && !single ? () => setLeaf(null) : onBack
+      onBack: leaf && !single ? () => {
+        setLeaf(null);
+        setPick(null);
+      } : onBack
     }, /*#__PURE__*/React.createElement("div", {
       className: "muted small between",
       style: {
@@ -2964,9 +3018,15 @@ function CategoryDrill({
       }
     }, /*#__PURE__*/React.createElement("span", null, label, " · ", l.length, " transactions"), /*#__PURE__*/React.createElement("span", {
       className: "num"
-    }, fmt(sumBy(l, t => t.amount)))), /*#__PURE__*/React.createElement(DayGroups, {
+    }, fmt(sumBy(l, t => t.amount)))), R.isYear && /*#__PURE__*/React.createElement(CatMonths, {
       M: M,
+      R: R,
       list: l,
+      pick: pick,
+      onPick: setPick
+    }), /*#__PURE__*/React.createElement(DayGroups, {
+      M: M,
+      list: shown,
       onEdit: ctx.editTx,
       onDelete: ctx.deleteTxRow
     }));
@@ -3021,7 +3081,11 @@ function CategoryDrill({
     }, fmtPct(p.v / tot), " · ", list.filter(t => t.category === p.k).length, " transactions")), /*#__PURE__*/React.createElement("span", {
       className: "chev"
     }, "›"));
-  })));
+  })), R.isYear && /*#__PURE__*/React.createElement(CatMonths, {
+    M: M,
+    R: R,
+    list: list
+  }));
 }
 
 // ===================================================================
